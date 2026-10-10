@@ -349,20 +349,48 @@ jobs:
             systemd systemd-sysv udev dbus openssh-server network-manager \
             wireless-tools wpasupplicant iw adbd zram-tools \
             procps psmisc htop vim-tiny nano curl wget ca-certificates \
-            iproute2 iptables isc-dhcp-client tzdata locales ${MPKGS}"
-          sudo mkdir -p rootfs/lib/modules
-          sudo tar -C rootfs -xzf files/modules.tar.gz
+            iproute2 iptables isc-dhcp-client tzdata locales sudo ${MPKGS}"
+          # 内核模块：绝对不能直接 tar -C rootfs！
+          # modules.tar.gz 里有 lib/ 这个目录条目，而 Debian 13 是全 usrmerge、
+          # /lib 是指向 usr/lib 的符号链接。GNU tar 遇到已存在的符号链接会
+          # unlink 掉再建成真实空目录 —— /lib/ld-linux-aarch64.so.1 就此消失，
+          # 之后所有 chroot 都会 "Could not open '/lib/ld-linux-aarch64.so.1'"。
+          # 先解到 staging，再 cp -a 合并进真实位置 usr/lib/modules。
+          sudo rm -rf /tmp/modstage && sudo mkdir -p /tmp/modstage
+          sudo tar -C /tmp/modstage -xzf files/modules.tar.gz
+          sudo mkdir -p rootfs/usr/lib/modules
+          sudo cp -a /tmp/modstage/lib/modules/. rootfs/usr/lib/modules/
+          sudo rm -rf /tmp/modstage
+          ls rootfs/usr/lib/modules/
+
+          # 自检：确认 /lib 仍是符号链接且链接器还在（万一别处又踩同一个坑）
+          if [ ! -e rootfs/lib/ld-linux-aarch64.so.1 ]; then
+            echo "!! /lib/ld-linux-aarch64.so.1 不见了，正在恢复 /lib -> usr/lib"
+            if [ -d rootfs/lib ] && [ ! -L rootfs/lib ]; then
+              sudo cp -a rootfs/lib/. rootfs/usr/lib/ 2>/dev/null || true
+              sudo rm -rf rootfs/lib
+            fi
+            sudo ln -sfn usr/lib rootfs/lib
+          fi
+          ls -ld rootfs/lib
 
       - name: 部署 overlay（ADB gadget / 内存优化 / 网络）
         run: |
           sudo cp -a overlay/. rootfs/
           sudo chmod +x rootfs/usr/local/sbin/ufi-usb-gadget
           sudo chmod 600 rootfs/etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null || true
-          # adbd 降权到 uid 2000(AID_SHELL)，需要这个用户存在
-          sudo chroot rootfs bash -c "
-            getent group shell >/dev/null || groupadd -g 2000 shell
-            getent passwd shell >/dev/null || useradd -u 2000 -g 2000 -M -s /bin/bash -d /home/shell shell
-            mkdir -p /root/.android /dev/usb-ffs"
+          sudo mkdir -p rootfs/root/.android rootfs/dev/usb-ffs
+
+          # adbd 降权到 uid 2000(AID_SHELL)，需要这个用户存在。
+          # 刻意不再用 chroot：rootfs 里的动态链接器一旦出闪失，整次构建
+          # 会卡在最后一步白跑。直接写 account 数据库，对 qemu/binfmt 零依赖。
+          sudo grep -q '^shell:' rootfs/etc/group \
+            || echo 'shell:x:2000:' | sudo tee -a rootfs/etc/group >/dev/null
+          sudo grep -q '^shell:' rootfs/etc/passwd \
+            || echo 'shell:x:2000:2000::/home/shell:/bin/bash' | sudo tee -a rootfs/etc/passwd >/dev/null
+          sudo grep -q '^shell:' rootfs/etc/shadow \
+            || echo 'shell:!*:19000:0:99999:7:::' | sudo tee -a rootfs/etc/shadow >/dev/null
+          sudo mkdir -p rootfs/home/shell
 
       - name: 可选：装入 modem/wcnss 固件
         if: ${{ inputs.firmware_url != '' }}
@@ -380,27 +408,67 @@ jobs:
 
       - name: 精简与清理
         run: |
-          sudo chroot rootfs bash -c "
-            echo 'ufi103s' > /etc/hostname
-            printf '127.0.0.1\tlocalhost\n127.0.1.1\tufi103s\n' > /etc/hosts
-            useradd -m -s /bin/bash -G sudo,adm user 2>/dev/null || true
-            echo 'user:1' | chpasswd; echo 'root:1' | chpasswd
-            sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
-            sed -i 's/^# *zh_CN.UTF-8/zh_CN.UTF-8/' /etc/locale.gen
-            locale-gen 2>/dev/null || true
-            echo 'LANG=C.UTF-8' > /etc/default/locale
-            ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-            echo 'Asia/Shanghai' > /etc/timezone
-            systemctl enable serial-getty@ttyMSM0.service 2>/dev/null || true
-            [ '${{ inputs.modem_mode }}' != 'onboot' ] && systemctl disable ModemManager.service 2>/dev/null || true
-            [ '${{ inputs.modem_mode }}' = 'none' ] && systemctl mask ModemManager.service 2>/dev/null || true
-            for s in bluetooth.service avahi-daemon.service cups.service rsyslog.service \
-                     cron.service apt-daily.timer apt-daily-upgrade.timer man-db.timer \
-                     e2scrub_all.timer fstrim.timer systemd-timesyncd.service; do
-              systemctl disable \$s 2>/dev/null || true
-            done
-            mkdir -p /etc/systemd/journald.conf.d
-            cat > /etc/systemd/journald.conf.d/99-lowmem.conf <<'JCF'
+          # 同样全部改成纯文件操作：systemctl enable/disable 直接换成
+          # 增删 *.wants 里的 symlink，效果完全等价，但不再依赖 chroot + qemu。
+          echo 'ufi103s' | sudo tee rootfs/etc/hostname >/dev/null
+          printf '127.0.0.1\tlocalhost\n127.0.1.1\tufi103s\n' | sudo tee rootfs/etc/hosts >/dev/null
+
+          # --- 账户与密码（明文 1 的 SHA-512）---
+          PW='$6$sGEK/TnRIvw03Oex$LCH3DvNfyrjc9Zosz.nMLz9t4CHaCP1JKz8nx8SehCP2CTuYeojmy7FwEH3zgvZsnQMp.I0332aj.gHRziGY7/'
+          sudo grep -q '^sudo:' rootfs/etc/group || echo 'sudo:x:27:' | sudo tee -a rootfs/etc/group >/dev/null
+          sudo grep -q '^adm:'  rootfs/etc/group || echo 'adm:x:4:'  | sudo tee -a rootfs/etc/group >/dev/null
+          sudo grep -q '^user:' rootfs/etc/group  || echo 'user:x:1000:' | sudo tee -a rootfs/etc/group >/dev/null
+          sudo grep -q '^user:' rootfs/etc/passwd || echo 'user:x:1000:1000::/home/user:/bin/bash' | sudo tee -a rootfs/etc/passwd >/dev/null
+          sudo grep -q '^user:' rootfs/etc/shadow || echo "user:$PW:19000:0:99999:7:::" | sudo tee -a rootfs/etc/shadow >/dev/null
+          sudo sed -i 's/^\(sudo:x:27:\)/\1user/' rootfs/etc/group
+          sudo sed -i 's/^\(adm:x:4:\)/\1user/' rootfs/etc/group
+          sudo sed -i "s|^root:[^:]*:|root:$PW:|" rootfs/etc/shadow
+          sudo mkdir -p rootfs/home/user && sudo chown 1000:1000 rootfs/home/user
+          sudo mkdir -p rootfs/home/shell && sudo chown 2000:2000 rootfs/home/shell
+
+          # --- locale / 时区 ---
+          sudo sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' rootfs/etc/locale.gen 2>/dev/null || true
+          sudo sed -i 's/^# *zh_CN.UTF-8/zh_CN.UTF-8/' rootfs/etc/locale.gen 2>/dev/null || true
+          echo 'LANG=C.UTF-8' | sudo tee rootfs/etc/default/locale >/dev/null
+          sudo ln -sf /usr/share/zoneinfo/Asia/Shanghai rootfs/etc/localtime
+          echo 'Asia/Shanghai' | sudo tee rootfs/etc/timezone >/dev/null
+
+          # --- systemd 启停 ---
+          WANTS=rootfs/etc/systemd/system/multi-user.target.wants
+          sudo mkdir -p "$WANTS"
+          # $1 = 要启用的实例名（可含 @），$2 = 磁盘上的 unit 文件名（模板类要另给）
+          enable_unit() {
+            local inst="$1" unit="${2:-$1}"
+            if   [ -f "rootfs/etc/systemd/system/$unit" ]; then
+              sudo ln -sf "/etc/systemd/system/$unit" "$WANTS/$inst"
+            elif [ -f "rootfs/usr/lib/systemd/system/$unit" ]; then
+              sudo ln -sf "/usr/lib/systemd/system/$unit" "$WANTS/$inst"
+            else
+              echo "  (跳过 $inst：unit 文件 $unit 不存在)"
+            fi
+          }
+          # 先把 apt 装出来的默认 wants 清掉一批
+          # 注意 -path 必须写成 '*.wants/*'，只写 '*.wants' 匹配不到里面的文件
+          for s in bluetooth.service avahi-daemon.service cups.service rsyslog.service \
+                   cron.service systemd-timesyncd.service ModemManager.service; do
+            sudo find rootfs/etc/systemd/system -path '*.wants/*' -name "$s" -delete 2>/dev/null || true
+          done
+          for t in apt-daily.timer apt-daily-upgrade.timer man-db.timer \
+                   e2scrub_all.timer fstrim.timer; do
+            sudo find rootfs/etc/systemd/system -path '*.wants/*' -name "$t" -delete 2>/dev/null || true
+          done
+          enable_unit serial-getty@ttyMSM0.service 'serial-getty@.service'
+          enable_unit zramswap.service
+          enable_unit ufi-usb-gadget.service
+          enable_unit adbd.service
+          if [ '${{ inputs.modem_mode }}' = 'onboot' ]; then enable_unit ModemManager.service; fi
+          if [ '${{ inputs.modem_mode }}' = 'none' ]; then
+            sudo ln -sf /dev/null rootfs/etc/systemd/system/ModemManager.service
+          fi
+
+          # --- 低内存 journald / zram ---
+          sudo mkdir -p rootfs/etc/systemd/journald.conf.d
+          sudo tee rootfs/etc/systemd/journald.conf.d/99-lowmem.conf >/dev/null <<'JCF'
           [Journal]
           SystemMaxUse=16M
           RuntimeMaxUse=8M
@@ -409,14 +477,15 @@ jobs:
           Compress=yes
           ForwardToSyslog=no
           JCF
-            printf 'ALGO=lz4\nPERCENT=60\nPRIORITY=100\n' > /etc/default/zramswap
-            systemctl enable zramswap.service 2>/dev/null || true
-            systemctl enable ufi-usb-gadget.service
-            systemctl enable adbd.service
-            apt-get clean; rm -rf /var/lib/apt/lists/*
-            rm -f /usr/bin/qemu-aarch64-static
-            rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* 2>/dev/null || true"
+          printf 'ALGO=lz4\nPERCENT=60\nPRIORITY=100\n' | sudo tee rootfs/etc/default/zramswap >/dev/null
+
+          # --- 收尾清理 ---
+          sudo rm -f rootfs/usr/bin/qemu-aarch64-static
+          sudo rm -rf rootfs/var/lib/apt/lists/*
+          sudo rm -rf rootfs/var/cache/apt/archives/*.deb
+          sudo rm -rf rootfs/usr/share/doc/* rootfs/usr/share/man/* rootfs/usr/share/info/* 2>/dev/null || true
           echo "rootfs 大小: $(sudo du -sh rootfs | cut -f1)"
+          ls rootfs/etc/systemd/system/multi-user.target.wants/
 
       # ------------------------------------------------------------------
       # 9. 打包镜像
