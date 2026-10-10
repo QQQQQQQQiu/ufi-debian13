@@ -1,0 +1,7 @@
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+APT::AutoRemove::RecommendsImportant "false";
+APT::AutoRemove::SuggestsImportant "false";
+Acquire::Languages "none";
+APT::Get::Assume-Yes "true";
+Binary::apt::APT::Keep-Downloaded-Packages "false";

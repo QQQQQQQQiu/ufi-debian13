@@ -1,0 +1,162 @@
+name: UFI103S 环境探针（快速诊断）
+
+# =============================================================================
+# 只探测、不编译。约 3 分钟出结果。
+#
+# 为什么要有它：
+#   全量构建一次 40-70 分钟，而失败往往发生在后半段——等于每发现一个 bug
+#   就要等一小时。这个探针把「哪些名字真实存在」这类未知项一次性问清楚：
+#     · 内核实际版本 / 分支
+#     · 到底有哪些 defconfig 可用（msm8916_defconfig 不一定存在）
+#     · 内核树里实际有哪些 msm8916 板级 DTB（决定 UFI103S 该用哪个）
+#     · OPP 表能否解析、最高频点多少（超频补丁能否打上）
+#     · lk2nd 有哪些 make 目标
+#     · loop 挂载是否可用（决定打包走哪条路）
+#     · debootstrap trixie / adbd 包是否可用
+#
+# 用法：Actions → 本工作流 → Run workflow（参数全留空）→ 把输出贴出来
+# =============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_ref:
+        description: '内核分支/tag，留空=仓库默认分支'
+        required: false
+        default: ''
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 检出本套件
+        uses: actions/checkout@v4
+
+      - name: 装最小依赖
+        run: |
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+            device-tree-compiler python3 debootstrap qemu-user-static \
+            binfmt-support curl ca-certificates git
+          sudo update-binfmts --enable qemu-aarch64 2>/dev/null || true
+
+      # ------------------------------------------------------------------
+      - name: 拉取内核源码（仅 dts/configs，不编译）
+        run: |
+          mkdir -p src && cd src
+          if [ -n "${{ inputs.kernel_ref }}" ]; then
+            git clone --depth 1 -b "${{ inputs.kernel_ref }}" \
+              https://github.com/msm8916-mainline/linux.git linux
+          else
+            git clone --depth 1 https://github.com/msm8916-mainline/linux.git linux
+          fi
+          git clone --depth 1 https://github.com/msm8916-mainline/lk2nd.git
+
+      - name: 【1】内核版本与分支
+        run: |
+          cd src/linux
+          echo "分支: $(git branch --show-current)"
+          echo "HEAD: $(git rev-parse --short HEAD)"
+          echo "describe: $(git describe --tags 2>/dev/null || echo '(无 tag)')"
+          echo "Makefile 版本:"
+          head -6 Makefile
+
+      - name: 【2】可用的 defconfig（关键）
+        run: |
+          cd src/linux
+          echo "=== arch/arm64/configs 下与 qcom/msm8916 相关的 ==="
+          ls arch/arm64/configs/ | grep -iE "qcom|msm8916|msm" || echo "(无匹配)"
+          echo
+          echo "=== 全部 defconfig 数量 ==="
+          ls arch/arm64/configs/ | wc -l
+          echo
+          echo "=== 是否存在 msm8916_defconfig ==="
+          test -f arch/arm64/configs/msm8916_defconfig \
+            && echo "是" || echo "否 —— 必须用回退方案"
+          echo "=== 是否存在 qcom_defconfig ==="
+          test -f arch/arm64/configs/qcom_defconfig \
+            && echo "是" || echo "否"
+
+      - name: 【3】内核树里实际有哪些 MSM8916 板级 DTB（关键）
+        run: |
+          cd src/linux/arch/arm64/boot/dts/qcom
+          echo "=== 所有 msm8916-*.dts ==="
+          ls msm8916-*.dts 2>/dev/null | sed 's/\.dts$//' || echo "(无)"
+          echo
+          echo "=== 与随身WiFi/常见棒子相关的（thwc/uz801/ufi/mf800/jz）==="
+          ls *.dts | grep -iE "thwc|uz801|ufi|mf800|jz" || echo "(无匹配)"
+          echo
+          echo "=== Makefile 里 qcom 的 dtb 目标 ==="
+          grep -E "msm8916.*\.dtb" Makefile | head -40 || true
+
+      - name: 【4】OPP 表解析（超频可行性）
+        run: |
+          DTSI=src/linux/arch/arm64/boot/dts/qcom/msm8916.dtsi
+          if [ -f "$DTSI" ]; then
+            echo "找到 $DTSI"
+            python3 tools/opp-overclock.py --check --dtsi "$DTSI" \
+              || echo "!! 解析失败——超频补丁需要按实际结构调整"
+          else
+            echo "!! 未找到 $DTSI"
+            find src/linux/arch/arm64/boot/dts/qcom -maxdepth 1 -name "msm8916*" | head
+          fi
+
+      - name: 【5】lk2nd 有哪些 make 目标
+        run: |
+          cd src/lk2nd
+          echo "=== 项目/目标相关 ==="
+          grep -rE "^[a-zA-Z0-9_-]+:" Makefile 2>/dev/null | head -30 || true
+          echo
+          echo "=== target 目录 ==="
+          ls target/ 2>/dev/null | head -30 || true
+          echo
+          echo "=== 是否有 msm8916 相关 target ==="
+          ls target/ 2>/dev/null | grep -i msm8916 || echo "(需确认命名)"
+
+      - name: 【6】loop 挂载可用性（决定打包路径）
+        run: |
+          sudo mkdir -p /tmp/lp
+          dd if=/dev/zero of=/tmp/t.img bs=1M count=32 status=none
+          sudo mkfs.ext4 -F /tmp/t.img >/dev/null 2>&1
+          if sudo mount -o loop /tmp/t.img /tmp/lp 2>/tmp/mnt.err; then
+            echo "loop 挂载: 可用"
+            sudo umount /tmp/lp
+          else
+            echo "loop 挂载: 不可用 —— 打包必须走 mkfs -d"
+            cat /tmp/mnt.err
+          fi
+          echo "=== mkfs -d 支持 ==="
+          sudo mkfs.ext4 -F -d /tmp /tmp/t.img >/dev/null 2>&1 \
+            && echo "mkfs -d: 支持" || echo "mkfs -d: 不支持"
+
+      - name: 【7】Debian trixie 与关键包可用性
+        run: |
+          echo "=== debootstrap 是否认识 trixie ==="
+          ls /usr/share/debootstrap/scripts/ | grep -x trixie \
+            && echo "trixie: 支持" || echo "trixie: 不支持（需换源或降级）"
+          echo
+          echo "=== trixie 仓库里 adbd / zram-tools / modemmanager 是否存在 ==="
+          for p in adbd zram-tools modemmanager; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              "http://deb.debian.org/debian/dists/trixie/main/binary-arm64/Packages.gz")
+            echo "查询 $p（仓库连通性 HTTP $code）"
+          done
+          curl -s http://deb.debian.org/debian/dists/trixie/Release \
+            | head -5 || echo "!! trixie Release 拉取失败"
+
+      - name: 【8】qemu binfmt
+        run: |
+          ls /proc/sys/fs/binfmt_misc/ 2>/dev/null | grep -i qemu \
+            && echo "binfmt: 可用" || echo "binfmt: 不可用（debootstrap 第二阶段会失败）"
+
+      - name: 探针完成
+        run: |
+          echo "=============================================================="
+          echo " 探针结束。请把上面【1】~【8】的全部输出贴出来。"
+          echo " 重点看【2】defconfig、【3】DTB 列表、【4】OPP、【5】lk2nd 目标。"
+          echo "=============================================================="

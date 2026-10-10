@@ -1,0 +1,18 @@
+[Unit]
+Description=Android Debug Bridge daemon (ADB over USB gadget)
+After=ufi-usb-gadget.service
+Requires=ufi-usb-gadget.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+Environment=ADB_KEYS_PATH=/root/.android/adb_keys
+ExecStartPre=/bin/sh -c 'ip link set lo up 2>/dev/null || true'
+ExecStart=/usr/bin/adbd
+ExecStartPost=/usr/local/sbin/ufi-usb-gadget bind
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

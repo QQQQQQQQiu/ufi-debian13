@@ -1,0 +1,13 @@
+[Unit]
+Description=UFI103S USB composite gadget (RNDIS + ADB)
+Before=adbd.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ufi-usb-gadget setup
+ExecStop=/usr/local/sbin/ufi-usb-gadget reset
+
+[Install]
+WantedBy=sysinit.target
