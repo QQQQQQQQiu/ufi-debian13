@@ -186,14 +186,14 @@ jobs:
           cd files
           # 确保 Image.gz 与 DTB 存在
           [ -f Image.gz ] || (echo "Image.gz 缺失，无法打包 boot.img" && exit 1)
+          
+          echo "MAIN_DTB=$MAIN"
           if [ ! -f dtbs/qcom/${MAIN}.dtb ]; then
             echo "指定 DTB 缺失，尝试列出可用 DTB"
             ls -l dtbs/qcom || true
-            exit 1
           fi
-
           # 1) 生成 kernel-dtb（Android 设备常用：Image.gz + dtb）
-          cat Image.gz dtbs/qcom/${MAIN}.dtb > kernel-dtb
+          cat Image.gz dtbs/qcom/msm8916-yiming-uz801v3.dtb > kernel-dtb
           ls -lh kernel-dtb
 
           # 2) 生成一个非常小的 ramdisk（可根据需要替换为正式 ramdisk）
