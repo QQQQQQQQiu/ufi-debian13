@@ -1,0 +1,142 @@
+name: UFI103S Debian 13 Kernel Build (精简)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dtb_name:
+        description: '主 DTB（用于收集 dtb）'
+        required: true
+        default: 'msm8916-thwc-ufi001c'
+        type: choice
+        options:
+          - msm8916-thwc-ufi001c
+          - msm8916-thwc-uf896
+          - msm8916-yiming-uz801v3
+          - msm8916-fy-mf800
+      oc_hz:
+        description: 'CPU 最高频率(Hz)。1209600000=1.2GHz / 1401600000=1.4GHz / 0=不超频'
+        required: true
+        default: '1209600000'
+      oc_microvolt:
+        description: 'opp-microvolt（可选）'
+        required: false
+        default: ''
+      kernel_ref:
+        description: '内核分支/tag（留空使用 upstream 默认分支）'
+        required: false
+        default: ''
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  ARCH: arm64
+  CROSS_COMPILE: aarch64-linux-gnu-
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: 清理预装大件（腾磁盘，帮助内核编译）
+        run: |
+          df -h / /mnt || true
+          sudo rm -rf \
+            /opt/hostedtoolcache \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/powershell \
+            /usr/local/.ghcup \
+            /usr/lib/jvm 2>/dev/null || true
+          sudo apt-get clean
+          echo "=== 清理后 ==="
+          df -h /
+
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      - name: 安装交叉编译与构建依赖
+        run: |
+          sudo apt-get -o Acquire::Retries=5 \
+                       -o Acquire::http::Timeout=60 \
+                       -o Acquire::https::Timeout=60 update
+          sudo apt-get -o Acquire::Retries=5 \
+                       -o Acquire::http::Timeout=60 \
+                       -o Acquire::https::Timeout=60 install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libncurses-dev \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            device-tree-compiler kmod cpio xz-utils \
+            ccache python3 git curl ca-certificates
+
+      - name: 恢复 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-msm8916-${{ inputs.kernel_ref || 'default' }}-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
+          restore-keys: |
+            ccache-msm8916-${{ inputs.kernel_ref || 'default' }}-
+
+      - name: 拉取内核源码
+        run: |
+          mkdir -p src && cd src
+          if [ -n "${{ inputs.kernel_ref }}" ]; then
+            git clone --depth 1 -b "${{ inputs.kernel_ref }}" https://github.com/msm8916-mainline/linux.git linux
+          else
+            git clone --depth 1 https://github.com/msm8916-mainline/linux.git linux
+          fi
+          echo "=== 实际检出的分支/版本 ==="
+          git -C linux branch --show-current
+          echo "内核版本: $(git -C linux describe --tags 2>/dev/null || git -C linux rev-parse --short HEAD)"
+          echo "可用的 UFI/通用 DTB："
+          ls linux/arch/arm64/boot/dts/qcom/ | grep -E "msm8916.*(thwc|uz801|ufi|mf800|jz)" || true
+
+      - name: 应用 CPU 超频补丁（如果需要）
+        run: |
+          DTSI=src/linux/arch/arm64/boot/dts/qcom/msm8916.dtsi
+          # 检查并尝试应用超频补丁；失败不阻塞构建
+          python3 tools/opp-overclock.py --check --dtsi "$DTSI" \
+            || echo "!! --check 未通过，跳过超频（不影响出包）"
+
+          if [ "${{ inputs.oc_hz }}" != "0" ]; then
+            ARGS=(--apply --hz "${{ inputs.oc_hz }}" --dtsi "$DTSI")
+            [ -n "${{ inputs.oc_microvolt }}" ] && ARGS+=(--microvolt "${{ inputs.oc_microvolt }}")
+            python3 tools/opp-overclock.py "${ARGS[@]}" || echo "!! 超频补丁未应用，按内核默认频率出包"
+          else
+            echo "oc_hz=0，跳过超频"
+          fi
+
+          echo "=== 补丁后 OPP 复核 ==="
+          python3 tools/opp-overclock.py --check --dtsi "$DTSI" || true
+          echo "=== 生成的节点内容 ==="
+          grep -A3 "opp-${{ inputs.oc_hz }}" "$DTSI" || echo "(未插入，按默认频率)"
+
+      - name: 编译内核
+        run: |
+          cd src/linux
+          export PATH="/usr/lib/ccache:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          ccache -M 5G
+
+          for DC in msm8916_defconfig qcom_defconfig defconfig; do
+            echo "--- 尝试 defconfig: $DC ---"
+            if make "$DC" 2>&1 | tail -3; then
+              test -f .config && break
+            fi
+          done
+          test -f .config || { echo "!! 无法生成 .config"; exit 1; }
+
+          chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
+          if [ -f ../../kernel-fragments/ufi-lowmem.config ]; then
+            ./scripts/kconfig/merge_config.sh -m .config ../../kernel-fragments/ufi-lowmem.config
+          else
+            echo "!! 找不到低内存配置片段，跳过合并"
+          fi
+          make olddefconfig
+          echo "=== 关键配置自检 ==="
+          for k in CONFIG_ZRAM CONFIG_USB_FUNCTIONFS CONFIG_USB_CONFIGFS_RNDIS CONFIG_ARM_QCOM_CPUFREQ_NVMEM; do
+            grep -E "^$k=" .config || echo "!! $k 未开启"
+          done
+
+          if ! make -j"$(nproc)" CC="ccache ${CROSS_COMPILE}gcc" Image.gz dtbs modules > /tm
