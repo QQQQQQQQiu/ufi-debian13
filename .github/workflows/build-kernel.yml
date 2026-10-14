@@ -199,13 +199,11 @@ jobs:
           rm -f ramdisk.cpio ramdisk.img
           mkdir -p ramdisk
           cat > ramdisk/init <<'EOF'
-#!/bin/sh
-# minimal init for fastboot boot testing
-mount -t proc proc /proc || true
-mount -t sysfs sysfs /sys || true
-echo "Minimal ramdisk launched"
-exec /bin/sh
-EOF
+          mount -t proc proc /proc || true
+          mount -t sysfs sysfs /sys || true
+          echo "Minimal ramdisk launched" 
+          exec /bin/sh
+          EOF
           chmod +x ramdisk/init
           (cd ramdisk && find . | cpio -o -H newc --owner root:root > ../ramdisk.cpio)
           gzip -9 -n -c ramdisk.cpio > ramdisk.img
