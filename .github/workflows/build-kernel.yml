@@ -139,4 +139,196 @@ jobs:
 
           if ! make -j"$(nproc)" CC="ccache ${CROSS_COMPILE}gcc" Image.gz dtbs modules > /tmp/kbuild.log 2>&1; then
             echo "===== 内核编译失败，最后 60 行 ====="
-            tai
+            tail -60 /tmp/kbuild.log
+            exit 1
+          fi
+          tail -5 /tmp/kbuild.log
+
+          # 安装模块到临时目录以便后续打包到 initrd
+          make -j"$(nproc)" modules_install \
+               INSTALL_MOD_PATH=../../build/modules \
+               INSTALL_MOD_STRIP=1 DEPMOD=true
+          KVER=$(make kernelrelease); echo "$KVER" > ../../files/kernel-version.txt
+          echo "内核版本: $KVER"
+
+      - name: 收集内核产物
+        run: |
+          cd src/linux
+          mkdir -p ../../files/dtbs/qcom
+          cp arch/arm64/boot/Image.gz ../../files/
+
+          for f in arch/arm64/boot/dts/qcom/msm8916-*.dtb; do
+            [ -f "$f" ] && cp "$f" ../../files/dtbs/qcom/
+          done
+          echo "=== 已收录 DTB ==="
+          ls -lh ../../files/dtbs/qcom/ || true
+
+          # 选择 MAIN DTB（修复硬编码）
+          MAIN="${{ inputs.dtb_name }}"
+          if [ ! -f "../../files/dtbs/qcom/$MAIN.dtb" ]; then
+            echo "!! 请求的主 DTB $MAIN 不在内核树里，自动改用第一个可用 DTB"
+            MAIN=$(ls ../../files/dtbs/qcom/ | sed 's/\.dtb$//' | head -1)
+            echo "!! 改用: $MAIN"
+          fi
+          echo "MAIN_DTB=$MAIN" >> $GITHUB_ENV
+
+          dtc -I dtb -O dts "../../files/dtbs/qcom/$MAIN.dtb" -o "../../files/dtbs/qcom/$MAIN.dts" 2>/dev/null || true
+          grep -c "${{ inputs.oc_hz }}" "../../files/dtbs/qcom/$MAIN.dts" || true
+
+          # 清理源码以腾盘
+          cd ../.. && rm -rf src/linux
+          df -h /
+
+      - name: 生成完整 initrd（包含 modules 与 busybox）
+        run: |
+          set -e
+          cd files
+
+          # 读取 kernel version（从编译阶段保存的文件）
+          if [ -f kernel-version.txt ]; then
+            KVER=$(cat kernel-version.txt)
+          else
+            echo "!! kernel-version.txt 缺失，尝试从 modules 目录推断"
+            KVER=$(ls ../build/modules/lib/modules | head -n1 || true)
+          fi
+          echo "Detected kernel version: $KVER"
+
+          # 清理并准备 initrd 根目录
+          rm -rf ../build/initrd-root
+          mkdir -p ../build/initrd-root
+
+          # 将 modules 安装树复制到 initrd 根（保留目录结构）
+          if [ -d ../build/modules ]; then
+            sudo rsync -a ../build/modules/ ../build/initrd-root/ || true
+          fi
+
+          # 创建必要目录
+          sudo mkdir -p ../build/initrd-root/{bin,sbin,proc,sys,dev,lib/modules,usr/bin,usr/sbin}
+
+          # 拷贝 busybox（优先系统 busybox）
+          if [ -x /bin/busybox ]; then
+            sudo cp /bin/busybox ../build/initrd-root/bin/ || true
+          else
+            # fallback: busybox-static 包应该已安装，尝试查找
+            if command -v busybox >/dev/null 2>&1; then
+              sudo cp "$(command -v busybox)" ../build/initrd-root/bin/ || true
+            fi
+          fi
+          sudo chmod +x ../build/initrd-root/bin/busybox || true
+
+          # 生成常用链接
+          for app in sh mount umount modprobe insmod ls cat echo mkdir mknod dmesg sleep; do
+            sudo ln -sf /bin/busybox ../build/initrd-root/bin/$app || true
+          done
+
+          # 如果模块路径存在，为 initrd 生成 depmod 信息
+          if [ -d "../build/initrd-root/lib/modules/$KVER" ]; then
+            sudo depmod -b ../build/initrd-root $KVER || true
+          else
+            echo "!! 未找到 ../build/initrd-root/lib/modules/$KVER，跳过 depmod"
+          fi
+
+          # 创建 init 脚本（最小但可扩展）
+          sudo bash -lc 'printf "%s\n" \
+            "#!/bin/sh" \
+            "mount -t proc proc /proc || true" \
+            "mount -t sysfs sysfs /sys || true" \
+            "mount -t devtmpfs devtmpfs /dev || true" \
+            "echo \"initramfs: starting minimal init\"" \
+            "# Try to load modules (best-effort)" \
+            "if [ -d /lib/modules ]; then" \
+            "  for m in \$(find /lib/modules -type f -name '\''*.ko'\'' 2>/dev/null); do" \
+            "    : # placeholder, modprobe might be used if needed" \
+            "  done" \
+            "fi" \
+            "exec /bin/sh" > ../build/initrd-root/init'
+          sudo chmod +x ../build/initrd-root/init
+
+          # 打包为 initrd.img
+          cd ../build/initrd-root
+          sudo find . | cpio -H newc -o | gzip -9 -n > ../../files/initrd.img
+          cd ../../files
+          ls -lh initrd.img || true
+
+      - name: 使用 mkbootimg 生成标准 boot.img（kernel + dtb + initrd）
+        run: |
+          set -e
+          cd files
+          [ -f Image.gz ] || (echo "Image.gz 缺失，无法打包 boot.img" && exit 1)
+
+          MAIN=${MAIN_DTB:-${{ inputs.dtb_name }}}
+          echo "MAIN_DTB=$MAIN"
+          if [ ! -f dtbs/qcom/$MAIN.dtb ]; then
+            echo "指定 DTB 缺失，尝试列出可用 DTB"
+            ls -l dtbs/qcom || true
+          fi
+
+          # 使用 MAIN 生成 kernel-dtb（修复之前硬编码问题）
+          cat Image.gz dtbs/qcom/${MAIN}.dtb > kernel-dtb
+          ls -lh kernel-dtb || true
+
+          # 若 initrd 缺失则退回到极简 ramdisk（保证不会中断流程）
+          if [ ! -f initrd.img ]; then
+            echo "initrd.img 缺失，生成最小 ramdisk 作为 fallback"
+            rm -f ramdisk.cpio ramdisk.img
+            mkdir -p ramdisk
+
+            sudo bash -lc 'printf "%s\n" \
+              "#!/bin/sh" \
+              "mount -t proc proc /proc || true" \
+              "mount -t sysfs sysfs /sys || true" \
+              "exec /bin/sh" > ramdisk/init'
+            chmod +x ramdisk/init
+            (cd ramdisk && find . | cpio -o -H newc --owner root:root > ../ramdisk.cpio)
+            gzip -9 -n -c ramdisk.cpio > ramdisk.img
+            mv ramdisk.img initrd.img || true
+            rm -rf ramdisk ramdisk.cpio
+          fi
+
+          # 获取 mkbootimg.py（AOSP 工具）
+          if [ -d tools-mkbootimg ]; then
+            MKBOOT=tools-mkbootimg/mkbootimg.py
+          else
+            git clone https://android.googlesource.com/platform/system/tools/mkbootimg tools-mkbootimg -b master-kernel-build-2022 --depth=1 || true
+            if [ -x tools-mkbootimg/mkbootimg.py ]; then
+              MKBOOT=tools-mkbootimg/mkbootimg.py
+            else
+              curl -fsSL -o mkbootimg.py https://raw.githubusercontent.com/aosp-mirror/platform_system_core/master/mkbootimg/mkbootimg.py || true
+              MKBOOT=./mkbootimg.py
+            fi
+          fi
+          chmod +x "$MKBOOT" || true
+
+          # 生成 boot.img
+          "$MKBOOT" --base 0x80000000 \
+                    --kernel_offset 0x00080000 \
+                    --ramdisk_offset 0x02000000 \
+                    --tags_offset 0x01e00000 \
+                    --pagesize 2048 \
+                    --second_offset 0x00f00000 \
+                    --kernel kernel-dtb \
+                    --ramdisk initrd.img \
+                    --cmdline "earlycon console=tty0 console=ttyMSM0,115200 root=/dev/ram0 rw loglevel=7" \
+                    -o boot.img
+
+          ls -lh boot.img || (echo "boot.img 未生成" && exit 1)
+
+      - name: 只生成 boot.img 校验
+        run: |
+          cd files
+          if [ -f boot.img ]; then
+            sha256sum boot.img > SHA256SUMS
+          else
+            echo "boot.img 缺失，无法生成校验" && exit 1
+          fi
+          echo "=== 产物 ==="
+          ls -lh boot.img SHA256SUMS initrd.img kernel-dtb dtbs/qcom/* || true
+
+      - name: 上传 kernel artifact (仅 boot.img)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ufi103s-boot-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
+          path: |
+            files/boot.img
+            files/SHA256SUMS
+          retention-days: 30
