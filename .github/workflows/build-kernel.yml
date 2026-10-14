@@ -172,8 +172,9 @@ jobs:
           dtc -I dtb -O dts "../../files/dtbs/qcom/$MAIN.dtb" -o "../../files/dtbs/qcom/$MAIN.dts" 2>/dev/null || true
           grep -c "${{ inputs.oc_hz }}" "../../files/dtbs/qcom/$MAIN.dts" || true
 
-          tar -C ../../build/modules -czf ../../files/modules.tar.gz lib
-          ls -lh ../../files/modules.tar.gz
+          # 不再生成 modules.tar.gz（用户只需要 boot.img）
+          # tar -C ../../build/modules -czf ../../files/modules.tar.gz lib
+          # ls -lh ../../files/modules.tar.gz
 
           # 清理源码以腾盘
           cd ../.. && rm -rf src/linux
@@ -201,7 +202,7 @@ jobs:
           cat > ramdisk/init <<'EOF'
           mount -t proc proc /proc || true
           mount -t sysfs sysfs /sys || true
-          echo "Minimal ramdisk launched" 
+          echo "Minimal ramdisk launched"
           exec /bin/sh
           EOF
           chmod +x ramdisk/init
@@ -211,19 +212,16 @@ jobs:
           ls -lh ramdisk.img || true
 
           # 3) 获取 mkbootimg.py（AOSP 工具）
-          # 使用 shallow clone 保证可用性
           git clone https://android.googlesource.com/platform/system/tools/mkbootimg tools-mkbootimg -b master-kernel-build-2022 --depth=1 || true
           if [ -x tools-mkbootimg/mkbootimg.py ]; then
             MKBOOT=tools-mkbootimg/mkbootimg.py
           else
-            # 备用：尝试常见 github raw 路径
             curl -fsSL -o mkbootimg.py https://raw.githubusercontent.com/aosp-mirror/platform_system_core/master/mkbootimg/mkbootimg.py || true
             MKBOOT=./mkbootimg.py
           fi
           chmod +x $MKBOOT || true
 
-          # 4) 生成 boot.img（下面的 base/offset/pagesize 根据设备可能需要调整）
-          # 如果你已有合适的 base/offset，请替换为设备正确值
+          # 4) 生成 boot.img
           $MKBOOT --base 0x80000000 \
                   --kernel_offset 0x00080000 \
                   --ramdisk_offset 0x02000000 \
@@ -237,24 +235,22 @@ jobs:
 
           ls -lh boot.img || (echo "boot.img 未生成" && exit 1)
 
-      - name: 压缩内核产物并生成校验
+      - name: 只生成 boot.img 校验
         run: |
           cd files
-          xz -6 -T0 -f Image.gz
-          sha256sum Image.gz.xz modules.tar.gz kernel-version.txt boot.img > SHA256SUMS
-          echo "=== 压缩后产物 ==="
-          ls -lh
+          if [ -f boot.img ]; then
+            sha256sum boot.img > SHA256SUMS
+          else
+            echo "boot.img 缺失，无法生成校验" && exit 1
+          fi
+          echo "=== 产物 ==="
+          ls -lh boot.img SHA256SUMS || true
 
-      - name: 上传 kernel artifact
+      - name: 上传 kernel artifact (仅 boot.img)
         uses: actions/upload-artifact@v4
         with:
-          name: ufi103s-kernel-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
+          name: ufi103s-boot-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
           path: |
-            files/Image.gz.xz
-            files/modules.tar.gz
-            files/dtbs/qcom/*.dtb
-            files/dtbs/qcom/*.dts
-            files/SHA256SUMS
-            files/kernel-version.txt
             files/boot.img
+            files/SHA256SUMS
           retention-days: 30
