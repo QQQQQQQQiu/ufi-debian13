@@ -1,4 +1,4 @@
-name: UFI103S Debian 13 Kernel Build (精简)
+name: UFI Debian 13 Kernel Build (精简)
 
 on:
   workflow_dispatch:
