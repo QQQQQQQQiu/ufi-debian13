@@ -6,13 +6,12 @@ on:
       dtb_name:
         description: '主 DTB（用于收集 dtb）'
         required: true
-        default: 'msm8916-thwc-ufi001c'
+        default: 'msm8916-yiming-uz801v3'
         type: choice
         options:
           - msm8916-thwc-ufi001c
           - msm8916-thwc-uf896
           - msm8916-yiming-uz801v3
-          - msm8916-fy-mf800
       oc_hz:
         description: 'CPU 最高频率(Hz)。1209600000=1.2GHz / 1401600000=1.4GHz / 0=不超频'
         required: true
