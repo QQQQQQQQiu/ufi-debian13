@@ -66,7 +66,8 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             device-tree-compiler kmod cpio xz-utils \
-            ccache python3 git curl ca-certificates
+            ccache python3 git curl ca-certificates \
+            gzip
 
       - name: 恢复 ccache
         uses: actions/cache@v4
@@ -178,11 +179,71 @@ jobs:
           cd ../.. && rm -rf src/linux
           df -h /
 
+      - name: 使用 mkbootimg 生成标准 boot.img（kernel + dtb + minimal ramdisk）
+        run: |
+          set -e
+          cd files
+          # 确保 Image.gz 与 DTB 存在
+          [ -f Image.gz ] || (echo "Image.gz 缺失，无法打包 boot.img" && exit 1)
+          if [ ! -f dtbs/qcom/${MAIN}.dtb ]; then
+            echo "指定 DTB 缺失，尝试列出可用 DTB"
+            ls -l dtbs/qcom || true
+            exit 1
+          fi
+
+          # 1) 生成 kernel-dtb（Android 设备常用：Image.gz + dtb）
+          cat Image.gz dtbs/qcom/${MAIN}.dtb > kernel-dtb
+          ls -lh kernel-dtb
+
+          # 2) 生成一个非常小的 ramdisk（可根据需要替换为正式 ramdisk）
+          rm -f ramdisk.cpio ramdisk.img
+          mkdir -p ramdisk
+          cat > ramdisk/init <<'EOF'
+#!/bin/sh
+# minimal init for fastboot boot testing
+mount -t proc proc /proc || true
+mount -t sysfs sysfs /sys || true
+echo "Minimal ramdisk launched"
+exec /bin/sh
+EOF
+          chmod +x ramdisk/init
+          (cd ramdisk && find . | cpio -o -H newc --owner root:root > ../ramdisk.cpio)
+          gzip -9 -n -c ramdisk.cpio > ramdisk.img
+          rm -rf ramdisk ramdisk.cpio
+          ls -lh ramdisk.img || true
+
+          # 3) 获取 mkbootimg.py（AOSP 工具）
+          # 使用 shallow clone 保证可用性
+          git clone https://android.googlesource.com/platform/system/tools/mkbootimg tools-mkbootimg -b master-kernel-build-2022 --depth=1 || true
+          if [ -x tools-mkbootimg/mkbootimg.py ]; then
+            MKBOOT=tools-mkbootimg/mkbootimg.py
+          else
+            # 备用：尝试常见 github raw 路径
+            curl -fsSL -o mkbootimg.py https://raw.githubusercontent.com/aosp-mirror/platform_system_core/master/mkbootimg/mkbootimg.py || true
+            MKBOOT=./mkbootimg.py
+          fi
+          chmod +x $MKBOOT || true
+
+          # 4) 生成 boot.img（下面的 base/offset/pagesize 根据设备可能需要调整）
+          # 如果你已有合适的 base/offset，请替换为设备正确值
+          $MKBOOT --base 0x80000000 \
+                  --kernel_offset 0x00080000 \
+                  --ramdisk_offset 0x02000000 \
+                  --tags_offset 0x01e00000 \
+                  --pagesize 2048 \
+                  --second_offset 0x00f00000 \
+                  --kernel kernel-dtb \
+                  --ramdisk ramdisk.img \
+                  --cmdline "earlycon console=tty0 console=ttyMSM0,115200 root=/dev/ram0 rw loglevel=7" \
+                  -o boot.img
+
+          ls -lh boot.img || (echo "boot.img 未生成" && exit 1)
+
       - name: 压缩内核产物并生成校验
         run: |
           cd files
           xz -6 -T0 -f Image.gz
-          sha256sum Image.gz.xz modules.tar.gz kernel-version.txt > SHA256SUMS
+          sha256sum Image.gz.xz modules.tar.gz kernel-version.txt boot.img > SHA256SUMS
           echo "=== 压缩后产物 ==="
           ls -lh
 
@@ -197,4 +258,5 @@ jobs:
             files/dtbs/qcom/*.dts
             files/SHA256SUMS
             files/kernel-version.txt
+            files/boot.img
           retention-days: 30
