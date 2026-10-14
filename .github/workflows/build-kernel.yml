@@ -187,8 +187,8 @@ jobs:
           # 确保 Image.gz 与 DTB 存在
           [ -f Image.gz ] || (echo "Image.gz 缺失，无法打包 boot.img" && exit 1)
           
-          echo "MAIN_DTB=$MAIN"
-          if [ ! -f dtbs/qcom/${MAIN}.dtb ]; then
+          echo "MAIN_DTB=${{ inputs.dtb_name }}"
+          if [ ! -f dtbs/qcom/${{ inputs.dtb_name }}.dtb ]; then
             echo "指定 DTB 缺失，尝试列出可用 DTB"
             ls -l dtbs/qcom || true
           fi
