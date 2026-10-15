@@ -1,4 +1,4 @@
-name: UFI103S Debian 13 Firmware
+name: build-kernel
 on:
   workflow_dispatch:
     inputs:
@@ -52,12 +52,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 350        # 留 10 分钟余量，硬上限是 360
+    timeout-minutes: 350
 
     steps:
-      # ------------------------------------------------------------------
-      # 1. 腾磁盘：runner 只有约 14GB SSD，预装工具链就占掉一大半
-      # ------------------------------------------------------------------
       - name: 清理预装大件
         run: |
           df -h / /mnt || true
@@ -77,9 +74,6 @@ jobs:
       - name: 检出本套件
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------------
-      # 2. 依赖（新增 mkbootimg 用于打包 Android boot.img）
-      # ------------------------------------------------------------------
       - name: 安装交叉编译与打包依赖
         run: |
           sudo apt-get -o Acquire::Retries=5 \
@@ -97,14 +91,27 @@ jobs:
             debootstrap qemu-user-static binfmt-support \
             e2fsprogs dosfstools util-linux parted \
             dwarves libelf-dev mkbootimg \
-            python3 git curl ca-certificates ccache
+            python3 python3-pip git curl ca-certificates ccache
+
+          # 修复：mkbootimg 依赖 gki 模块，GitHub runner 默认没有它
+          # 先尝试 apt 包，如果没有，就回退到 pip
+          sudo apt-get install -y python3-gki 2>/dev/null || true
+          sudo python3 -m pip install --upgrade pip setuptools wheel || true
+          sudo python3 -m pip install --no-cache-dir gki || sudo pip3 install --no-cache-dir gki || true
+
+          python3 - <<'PY'
+          try:
+              import gki
+              print("gki OK:", getattr(gki, "__file__", "built-in"))
+          except Exception as e:
+              print("gki import failed:", e)
+              raise
+          PY
+
           sudo update-binfmts --enable qemu-aarch64 || true
           echo "=== qemu binfmt ==="
           ls /proc/sys/fs/binfmt_misc/ | grep -i qemu || echo "(未见，debootstrap 第二阶段可能失败)"
 
-      # ------------------------------------------------------------------
-      # 3. ccache：改 DTB 重跑时能省下大半个内核编译时间
-      # ------------------------------------------------------------------
       - name: 恢复 ccache
         uses: actions/cache@v4
         with:
@@ -113,9 +120,6 @@ jobs:
           restore-keys: |
             ccache-msm8916-${{ inputs.kernel_ref || 'default' }}-
 
-      # ------------------------------------------------------------------
-      # 4. 源码
-      # ------------------------------------------------------------------
       - name: 拉取内核与 bootchain 源码
         run: |
           mkdir -p src && cd src
@@ -140,9 +144,6 @@ jobs:
           echo "可用的 UFI/通用 DTB："
           ls linux/arch/arm64/boot/dts/qcom/ | grep -E "msm8916.*(thwc|uz801|ufi|mf800|jz)" || true
 
-      # ------------------------------------------------------------------
-      # 5. bootchain：qhypstub -> hyp.mbn，lk2nd -> aboot.mbn
-      # ------------------------------------------------------------------
       - name: 编译 bootchain
         run: |
           cd src
@@ -170,9 +171,6 @@ jobs:
           python3 qtestsign/qtestsign.py aboot "$LKIMG" -o ../files/aboot.mbn
           ls -lh ../files/hyp.mbn ../files/aboot.mbn
 
-      # ------------------------------------------------------------------
-      # 6. 超频补丁
-      # ------------------------------------------------------------------
       - name: 应用 CPU 超频补丁
         run: |
           DTSI=src/linux/arch/arm64/boot/dts/qcom/msm8916.dtsi
@@ -194,9 +192,6 @@ jobs:
           echo "=== 生成的节点内容 ==="
           grep -A3 "opp-${{ inputs.oc_hz }}" "$DTSI" || echo "(未插入，按默认频率)"
 
-      # ------------------------------------------------------------------
-      # 7. 内核
-      # ------------------------------------------------------------------
       - name: 编译内核
         run: |
           cd src/linux
@@ -270,9 +265,6 @@ jobs:
           cd ../.. && rm -rf src/linux src/lk2nd src/qhypstub src/qtestsign
           df -h /
 
-      # ------------------------------------------------------------------
-      # 8. rootfs：debootstrap trixie
-      # ------------------------------------------------------------------
       - name: debootstrap Debian 13
         run: |
           sudo debootstrap --arch arm64 --foreign \
@@ -416,9 +408,6 @@ jobs:
           echo "rootfs 大小: $(sudo du -sh rootfs | cut -f1)"
           ls rootfs/etc/systemd/system/multi-user.target.wants/
 
-      # ------------------------------------------------------------------
-      # 9. 打包镜像：使用 mkbootimg 生成 Android 标准 boot.img
-      # ------------------------------------------------------------------
       - name: 打包 boot.img / rootfs.bin
         run: |
           MAIN="${MAIN_DTB:-${{ inputs.dtb_name }}}"
@@ -461,9 +450,6 @@ jobs:
           echo "=== 压缩后产物 ==="
           ls -lh
 
-      # ------------------------------------------------------------------
-      # 10. 上传与发布
-      # ------------------------------------------------------------------
       - name: 上传 artifact
         uses: actions/upload-artifact@v4
         with:
