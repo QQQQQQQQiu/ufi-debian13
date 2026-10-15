@@ -15,7 +15,7 @@ on:
       oc_hz:
         description: 'CPU 最高频率(Hz)'
         required: true
-        default: '1209600000'
+        default: '1401600000'
       oc_microvolt:
         description: 'opp-microvolt'
         required: false
@@ -354,7 +354,8 @@ jobs:
           fi
 
           # 使用带有 UUID 的命令行，确保内核能准确找到根分区
-          CMDLINE="earlycon console=tty0 console=ttyMSM0,115200 root=UUID=$RU rw loglevel=7"
+          #CMDLINE="earlycon console=tty0 console=ttyMSM0,115200 root=UUID=$RU rw loglevel=7"
+          CMDLINE="earlycon root=PARTUUID=a7ab80e8-e9d1-e8cd-f157-93f69b1d141e console=ttyMSM0,115200 no_framebuffer=true rw androidboot.emmc=true androidboot.serialno=11c722 androidboot.baseband=msm mdss_mdp.panel=0:dsi:0:"
 
           # 克隆支持完整参数的 mkbootimg 工具（使用与另一个脚本一致的 master-kernel-build 分支）
           git clone https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg -b master-kernel-build-2022 --depth=1
