@@ -1,10 +1,9 @@
-name: UFI Kernel Build
-
+name: UFI103S Debian 13 Firmware
 on:
   workflow_dispatch:
     inputs:
       dtb_name:
-        description: '主 DTB（用于收集 dtb）'
+        description: '主 DTB（起不来就换，见下方选项）'
         required: true
         default: 'msm8916-yiming-uz801v3'
         type: choice
@@ -12,18 +11,38 @@ on:
           - msm8916-thwc-ufi001c
           - msm8916-thwc-uf896
           - msm8916-yiming-uz801v3
+          - msm8916-fy-mf800
       oc_hz:
-        description: 'CPU 最高频率(Hz)。1209600000=1.2GHz / 1401600000=1.4GHz / 0=不超频'
+        description: 'CPU 最高频率(Hz)。1209600000=1.2GHz(推荐) / 1401600000=1.4GHz(激进) / 0=不超频'
         required: true
         default: '1401600000'
       oc_microvolt:
-        description: 'opp-microvolt（可选）'
+        description: 'opp-microvolt。留空=继承最高频点写法；当前内核 OPP 表无此属性，电压由 CPR 管，一般别填'
         required: false
         default: ''
+      modem_mode:
+        description: '4G基带：ondemand=装但不自启(省内存,推荐) / onboot=开机自启 / none=移除'
+        required: true
+        default: 'none'
+        type: choice
+        options: [ondemand, onboot, none]
       kernel_ref:
-        description: '内核分支/tag（留空使用 upstream 默认分支）'
+        description: '内核分支/tag。留空=用仓库默认分支(最稳)；想指定可填 wip/msm8916/v6.18-rc4 之类'
         required: false
         default: ''
+      rootfs_size_mb:
+        description: 'rootfs 镜像大小(MB)，刷完在设备上 resize2fs 撑满'
+        required: true
+        default: '1400'
+      firmware_url:
+        description: '可选：modem/wcnss 固件包的直链(zip/tar)。留空则留待刷完后手动拷入'
+        required: false
+        default: ''
+      publish_release:
+        description: '是否发布到 GitHub Release（产物较大时用它，不受 500MB artifact 限制）'
+        required: false
+        default: false
+        type: boolean
 
 env:
   DEBIAN_FRONTEND: noninteractive
@@ -33,10 +52,13 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 350        # 留 10 分钟余量，硬上限是 360
 
     steps:
-      - name: 清理预装大件（腾磁盘，帮助内核编译）
+      # ------------------------------------------------------------------
+      # 1. 腾磁盘：runner 只有约 14GB SSD，预装工具链就占掉一大半
+      # ------------------------------------------------------------------
+      - name: 清理预装大件
         run: |
           df -h / /mnt || true
           sudo rm -rf \
@@ -45,31 +67,44 @@ jobs:
             /usr/local/lib/android \
             /opt/ghc \
             /usr/local/share/powershell \
+            /usr/share/swift \
             /usr/local/.ghcup \
             /usr/lib/jvm 2>/dev/null || true
           sudo apt-get clean
           echo "=== 清理后 ==="
           df -h /
 
-      - name: 检出本仓库
+      - name: 检出本套件
         uses: actions/checkout@v4
 
-      - name: 安装交叉编译与构建依赖
+      # ------------------------------------------------------------------
+      # 2. 依赖（新增 mkbootimg 用于打包 Android boot.img）
+      # ------------------------------------------------------------------
+      - name: 安装交叉编译与打包依赖
         run: |
           sudo apt-get -o Acquire::Retries=5 \
                        -o Acquire::http::Timeout=60 \
                        -o Acquire::https::Timeout=60 update
           sudo apt-get -o Acquire::Retries=5 \
-             -o Acquire::http::Timeout=60 \
-             -o Acquire::https::Timeout=60 install -y --no-install-recommends \
-          build-essential bc bison flex libssl-dev libncurses-dev \
-          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-          binutils-aarch64-linux-gnu \
-          device-tree-compiler kmod cpio xz-utils \
-          ccache python3 git curl ca-certificates \
-          gzip debootstrap qemu-user-static binfmt-support initramfs-tools busybox-static rsync \
-          abootimg android-sdk-libsparse-utils
+                       -o Acquire::http::Timeout=60 \
+                       -o Acquire::https::Timeout=60 \
+                       install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libncurses-dev \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            gcc-arm-none-eabi binutils-arm-none-eabi \
+            kmod cpio rsync xz-utils zstd device-tree-compiler u-boot-tools \
+            debootstrap qemu-user-static binfmt-support \
+            e2fsprogs dosfstools util-linux parted \
+            dwarves libelf-dev mkbootimg \
+            python3 git curl ca-certificates ccache
+          sudo update-binfmts --enable qemu-aarch64 || true
+          echo "=== qemu binfmt ==="
+          ls /proc/sys/fs/binfmt_misc/ | grep -i qemu || echo "(未见，debootstrap 第二阶段可能失败)"
 
+      # ------------------------------------------------------------------
+      # 3. ccache：改 DTB 重跑时能省下大半个内核编译时间
+      # ------------------------------------------------------------------
       - name: 恢复 ccache
         uses: actions/cache@v4
         with:
@@ -78,31 +113,78 @@ jobs:
           restore-keys: |
             ccache-msm8916-${{ inputs.kernel_ref || 'default' }}-
 
-      - name: 拉取内核源码
+      # ------------------------------------------------------------------
+      # 4. 源码
+      # ------------------------------------------------------------------
+      - name: 拉取内核与 bootchain 源码
         run: |
           mkdir -p src && cd src
+
           if [ -n "${{ inputs.kernel_ref }}" ]; then
-            git clone --depth 1 -b "${{ inputs.kernel_ref }}" https://github.com/msm8916-mainline/linux.git linux
+            git clone --depth 1 -b "${{ inputs.kernel_ref }}" \
+              https://github.com/msm8916-mainline/linux.git linux
           else
             git clone --depth 1 https://github.com/msm8916-mainline/linux.git linux
           fi
+
+          git clone --depth 1 https://github.com/msm8916-mainline/lk2nd.git
+          git clone --depth 1 https://github.com/msm8916-mainline/qhypstub.git
+          git clone --depth 1 https://github.com/msm8916-mainline/qtestsign.git
+
           echo "=== 实际检出的分支/版本 ==="
-          git -C linux branch --show-current
+          git -C linux     branch --show-current
+          git -C lk2nd     branch --show-current
+          git -C qhypstub  branch --show-current
+          git -C qtestsign branch --show-current
           echo "内核版本: $(git -C linux describe --tags 2>/dev/null || git -C linux rev-parse --short HEAD)"
           echo "可用的 UFI/通用 DTB："
           ls linux/arch/arm64/boot/dts/qcom/ | grep -E "msm8916.*(thwc|uz801|ufi|mf800|jz)" || true
 
-      - name: 应用 CPU 超频补丁（如果需要）
+      # ------------------------------------------------------------------
+      # 5. bootchain：qhypstub -> hyp.mbn，lk2nd -> aboot.mbn
+      # ------------------------------------------------------------------
+      - name: 编译 bootchain
+        run: |
+          cd src
+          make -C qhypstub CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)"
+          ls -lh qhypstub/*.elf 2>/dev/null || true
+
+          cd lk2nd
+          for TGT in lk1st-msm8916 msm8916 lk2nd-msm8916 ""; do
+            echo "--- 尝试 lk2nd 目标: '${TGT:-<默认>}' ---"
+            if [ -z "$TGT" ]; then
+              make TOOLCHAIN_PREFIX=arm-none-eabi- -j"$(nproc)" && break
+            else
+              make TOOLCHAIN_PREFIX=arm-none-eabi- "$TGT" -j"$(nproc)" && break
+            fi
+          done
+          cd ..
+
+          LKIMG=$(find lk2nd -name '*.img' -o -name '*.mbn' | grep -iE 'lk1st|lk2nd' | head -1)
+          [ -z "$LKIMG" ] && LKIMG=$(find lk2nd -name '*.img' | head -1)
+          [ -z "$LKIMG" ] && { echo "!! 未找到 lk2nd 产物"; find lk2nd -name '*.img' -o -name '*.bin' | head -20; exit 1; }
+          echo "lk2nd 产物: $LKIMG"
+
+          mkdir -p ../files
+          python3 qtestsign/qtestsign.py hyp  qhypstub/qhypstub.elf -o ../files/hyp.mbn
+          python3 qtestsign/qtestsign.py aboot "$LKIMG" -o ../files/aboot.mbn
+          ls -lh ../files/hyp.mbn ../files/aboot.mbn
+
+      # ------------------------------------------------------------------
+      # 6. 超频补丁
+      # ------------------------------------------------------------------
+      - name: 应用 CPU 超频补丁
         run: |
           DTSI=src/linux/arch/arm64/boot/dts/qcom/msm8916.dtsi
-          # 检查并尝试应用超频补丁；失败不阻塞构建
+
           python3 tools/opp-overclock.py --check --dtsi "$DTSI" \
             || echo "!! --check 未通过，跳过超频（不影响出包）"
 
           if [ "${{ inputs.oc_hz }}" != "0" ]; then
             ARGS=(--apply --hz "${{ inputs.oc_hz }}" --dtsi "$DTSI")
             [ -n "${{ inputs.oc_microvolt }}" ] && ARGS+=(--microvolt "${{ inputs.oc_microvolt }}")
-            python3 tools/opp-overclock.py "${ARGS[@]}" || echo "!! 超频补丁未应用，按内核默认频率出包"
+            python3 tools/opp-overclock.py "${ARGS[@]}" \
+              || echo "!! 超频补丁未应用，按内核默认频率出包"
           else
             echo "oc_hz=0，跳过超频"
           fi
@@ -112,7 +194,10 @@ jobs:
           echo "=== 生成的节点内容 ==="
           grep -A3 "opp-${{ inputs.oc_hz }}" "$DTSI" || echo "(未插入，按默认频率)"
 
-      - name: 编译内核（Image.gz + dtbs + modules）
+      # ------------------------------------------------------------------
+      # 7. 内核
+      # ------------------------------------------------------------------
+      - name: 编译内核
         run: |
           cd src/linux
           export PATH="/usr/lib/ccache:$PATH"
@@ -130,28 +215,32 @@ jobs:
 
           chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
           if [ -f ../../kernel-fragments/ufi-lowmem.config ]; then
-            ./scripts/kconfig/merge_config.sh -m .config ../../kernel-fragments/ufi-lowmem.config
+            ./scripts/kconfig/merge_config.sh -m .config \
+              ../../kernel-fragments/ufi-lowmem.config
           else
             echo "!! 找不到低内存配置片段，跳过合并"
           fi
           make olddefconfig
           echo "=== 关键配置自检 ==="
+          for k in CONFIG_ZRAM CONFIG_USB_FUNCTIONFS CONFIG_USB_CONFIGFS_RNDIS CONFIG_ARM_QCOM_CPUFREQ_NVMEM; do
+            grep -E "^$k=" .config || echo "!! $k 未开启"
+          done
 
-          if ! make -j"$(nproc)" CC="ccache ${CROSS_COMPILE}gcc" Image.gz dtbs modules > /tmp/kbuild.log 2>&1; then
+          if ! make -j"$(nproc)" CC="ccache ${CROSS_COMPILE}gcc" \
+                     Image.gz dtbs modules > /tmp/kbuild.log 2>&1; then
             echo "===== 内核编译失败，最后 60 行 ====="
             tail -60 /tmp/kbuild.log
             exit 1
           fi
           tail -5 /tmp/kbuild.log
 
-          # 安装模块到临时目录以便后续打包到 initrd
           make -j"$(nproc)" modules_install \
                INSTALL_MOD_PATH=../../build/modules \
                INSTALL_MOD_STRIP=1 DEPMOD=true
           KVER=$(make kernelrelease); echo "$KVER" > ../../files/kernel-version.txt
           echo "内核版本: $KVER"
 
-      - name: 收集内核产物
+      - name: 收内核产物
         run: |
           cd src/linux
           mkdir -p ../../files/dtbs/qcom
@@ -161,9 +250,8 @@ jobs:
             [ -f "$f" ] && cp "$f" ../../files/dtbs/qcom/
           done
           echo "=== 已收录 DTB ==="
-          ls -lh ../../files/dtbs/qcom/ || true
+          ls ../../files/dtbs/qcom/
 
-          # 选择 MAIN DTB（修复硬编码）
           MAIN="${{ inputs.dtb_name }}"
           if [ ! -f "../../files/dtbs/qcom/$MAIN.dtb" ]; then
             echo "!! 请求的主 DTB $MAIN 不在内核树里，自动改用第一个可用 DTB"
@@ -172,163 +260,250 @@ jobs:
           fi
           echo "MAIN_DTB=$MAIN" >> $GITHUB_ENV
 
-          dtc -I dtb -O dts "../../files/dtbs/qcom/$MAIN.dtb" -o "../../files/dtbs/qcom/$MAIN.dts" 2>/dev/null || true
+          dtc -I dtb -O dts "../../files/dtbs/qcom/$MAIN.dtb" \
+            -o "../../files/dtbs/qcom/$MAIN.dts" 2>/dev/null || true
           grep -c "${{ inputs.oc_hz }}" "../../files/dtbs/qcom/$MAIN.dts" || true
 
-          # 清理源码以腾盘
-          cd ../.. && rm -rf src/linux
+          tar -C ../../build/modules -czf ../../files/modules.tar.gz lib
+          ls -lh ../../files/modules.tar.gz
+
+          cd ../.. && rm -rf src/linux src/lk2nd src/qhypstub src/qtestsign
           df -h /
 
-      - name: 生成完整 initrd（包含 modules 与 busybox）
+      # ------------------------------------------------------------------
+      # 8. rootfs：debootstrap trixie
+      # ------------------------------------------------------------------
+      - name: debootstrap Debian 13
         run: |
-          set -e
-          cd files
+          sudo debootstrap --arch arm64 --foreign \
+            --variant=minbase \
+            --components=main,contrib,non-free-firmware \
+            --include=ca-certificates,locales,tzdata \
+            trixie rootfs http://deb.debian.org/debian
+          sudo cp -a /usr/bin/qemu-aarch64-static rootfs/usr/bin/
+          sudo chroot rootfs /debootstrap/debootstrap --second-stage
 
-          # 读取 kernel version（从编译阶段保存的文件）
-          if [ -f kernel-version.txt ]; then
-            KVER=$(cat kernel-version.txt)
-          else
-            echo "!! kernel-version.txt 缺失，尝试从 modules 目录推断"
-            KVER=$(ls ../build/modules/lib/modules | head -n1 || true)
-          fi
-          echo "Detected kernel version: $KVER"
+      - name: 安装软件包与内核模块
+        run: |
+          sudo tee rootfs/etc/apt/sources.list >/dev/null <<'EOF'
+          deb http://deb.debian.org/debian trixie main contrib non-free-firmware
+          deb http://deb.debian.org/debian trixie-updates main contrib non-free-firmware
+          deb http://security.debian.org/debian-security trixie-security main contrib non-free-firmware
+          EOF
+          case "${{ inputs.modem_mode }}" in
+            onboot|ondemand) MPKGS=modemmanager ;;
+            none)            MPKGS="" ;;
+          esac
+          sudo chroot rootfs bash -c "apt-get update && \
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            systemd systemd-sysv udev dbus openssh-server network-manager \
+            wireless-tools wpasupplicant iw adbd zram-tools \
+            procps psmisc htop vim-tiny nano curl wget ca-certificates \
+            iproute2 iptables isc-dhcp-client tzdata locales sudo ${MPKGS}"
+          sudo rm -rf /tmp/modstage && sudo mkdir -p /tmp/modstage
+          sudo tar -C /tmp/modstage -xzf files/modules.tar.gz
+          sudo mkdir -p rootfs/usr/lib/modules
+          sudo cp -a /tmp/modstage/lib/modules/. rootfs/usr/lib/modules/
+          sudo rm -rf /tmp/modstage
+          ls rootfs/usr/lib/modules/
 
-          # 清理并准备 initrd 根目录
-          rm -rf ../build/initrd-root
-          mkdir -p ../build/initrd-root
-
-          # 将 modules 安装树复制到 initrd 根（保留目录结构）
-          if [ -d ../build/modules ]; then
-            sudo rsync -a ../build/modules/ ../build/initrd-root/ || true
-          fi
-
-          # 创建必要目录
-          sudo mkdir -p ../build/initrd-root/{bin,sbin,proc,sys,dev,lib/modules,usr/bin,usr/sbin}
-
-          # 拷贝 busybox（优先系统 busybox）
-          if [ -x /bin/busybox ]; then
-            sudo cp /bin/busybox ../build/initrd-root/bin/ || true
-          else
-            # fallback: busybox-static 包应该已安装，尝试查找
-            if command -v busybox >/dev/null 2>&1; then
-              sudo cp "$(command -v busybox)" ../build/initrd-root/bin/ || true
+          if [ ! -e rootfs/lib/ld-linux-aarch64.so.1 ]; then
+            echo "!! /lib/ld-linux-aarch64.so.1 不见了，正在恢复 /lib -> usr/lib"
+            if [ -d rootfs/lib ] && [ ! -L rootfs/lib ]; then
+              sudo cp -a rootfs/lib/. rootfs/usr/lib/ 2>/dev/null || true
+              sudo rm -rf rootfs/lib
             fi
+            sudo ln -sfn usr/lib rootfs/lib
           fi
-          sudo chmod +x ../build/initrd-root/bin/busybox || true
+          ls -ld rootfs/lib
 
-          # 生成常用链接
-          for app in sh mount umount modprobe insmod ls cat echo mkdir mknod dmesg sleep; do
-            sudo ln -sf /bin/busybox ../build/initrd-root/bin/$app || true
-          done
-
-          # 如果模块路径存在，为 initrd 生成 depmod 信息
-          if [ -d "../build/initrd-root/lib/modules/$KVER" ]; then
-            sudo depmod -b ../build/initrd-root $KVER || true
-          else
-            echo "!! 未找到 ../build/initrd-root/lib/modules/$KVER，跳过 depmod"
-          fi
-
-          # 创建 init 脚本（最小但可扩展）
-          sudo bash -lc 'printf "%s\n" \
-            "#!/bin/sh" \
-            "mount -t proc proc /proc || true" \
-            "mount -t sysfs sysfs /sys || true" \
-            "mount -t devtmpfs devtmpfs /dev || true" \
-            "echo \"initramfs: starting minimal init\"" \
-            "# Try to load modules (best-effort)" \
-            "if [ -d /lib/modules ]; then" \
-            "  for m in \$(find /lib/modules -type f -name '\''*.ko'\'' 2>/dev/null); do" \
-            "    : # placeholder, modprobe might be used if needed" \
-            "  done" \
-            "fi" \
-            "exec /bin/sh" > ../build/initrd-root/init'
-          sudo chmod +x ../build/initrd-root/init
-
-          # 打包为 initrd.img
-          cd ../build/initrd-root
-          sudo find . | cpio -H newc -o | gzip -9 -n > ../../files/initrd.img
-          cd ../../files
-          ls -lh initrd.img || true
-
-      - name: 使用 mkbootimg 生成标准 boot.img（kernel + dtb + initrd）
+      - name: 部署 overlay（ADB gadget / 内存优化 / 网络）
         run: |
-          set -e
-          cd files
-          [ -f Image.gz ] || (echo "Image.gz 缺失，无法打包 boot.img" && exit 1)
+          sudo cp -a overlay/. rootfs/
+          sudo chmod +x rootfs/usr/local/sbin/ufi-usb-gadget
+          sudo chmod 600 rootfs/etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null || true
+          sudo mkdir -p rootfs/root/.android rootfs/dev/usb-ffs
 
-          MAIN=${MAIN_DTB:-${{ inputs.dtb_name }}}
-          echo "MAIN_DTB=$MAIN"
-          if [ ! -f dtbs/qcom/$MAIN.dtb ]; then
-            echo "指定 DTB 缺失，尝试列出可用 DTB"
-            ls -l dtbs/qcom || true
-          fi
+          sudo grep -q '^shell:' rootfs/etc/group \
+            || echo 'shell:x:2000:' | sudo tee -a rootfs/etc/group >/dev/null
+          sudo grep -q '^shell:' rootfs/etc/passwd \
+            || echo 'shell:x:2000:2000::/home/shell:/bin/bash' | sudo tee -a rootfs/etc/passwd >/dev/null
+          sudo grep -q '^shell:' rootfs/etc/shadow \
+            || echo 'shell:!*:19000:0:99999:7:::' | sudo tee -a rootfs/etc/shadow >/dev/null
+          sudo mkdir -p rootfs/home/shell
 
-          # 使用 MAIN 生成 kernel-dtb（修复之前硬编码问题）
-          cat Image.gz dtbs/qcom/${MAIN}.dtb > kernel-dtb
-          ls -lh kernel-dtb || true
+      - name: 可选：装入 modem/wcnss 固件
+        if: ${{ inputs.firmware_url != '' }}
+        run: |
+          cd /tmp && curl -fsSL "${{ inputs.firmware_url }}" -o fw.bin
+          mkdir -p fw && (unzip -q -o fw.bin -d fw || tar xf fw.bin -C fw)
+          sudo mkdir -p rootfs/lib/firmware
+          sudo find fw -type f \
+            \( -name 'modem.*' -o -name 'mba.*' -o -name 'wcnss.*' \
+               -o -name 'playread.*' -o -name 'cmnlib.*' -o -name 'keymaste.*' \
+               -o -name 'widevine.*' -o -name 'sec.*' \) \
+            -exec cp {} rootfs/lib/firmware/ \;
+          ls rootfs/lib/firmware/ | head -20
 
-          # 若 initrd 缺失则退回到极简 ramdisk（保证不会中断流程）
-          if [ ! -f initrd.img ]; then
-            echo "initrd.img 缺失，生成最小 ramdisk 作为 fallback"
-            rm -f ramdisk.cpio ramdisk.img
-            mkdir -p ramdisk
+      - name: 精简与清理
+        run: |
+          echo 'ufi103s' | sudo tee rootfs/etc/hostname >/dev/null
+          printf '127.0.0.1\tlocalhost\n127.0.1.1\tufi103s\n' | sudo tee rootfs/etc/hosts >/dev/null
 
-            sudo bash -lc 'printf "%s\n" \
-              "#!/bin/sh" \
-              "mount -t proc proc /proc || true" \
-              "mount -t sysfs sysfs /sys || true" \
-              "exec /bin/sh" > ramdisk/init'
-            chmod +x ramdisk/init
-            (cd ramdisk && find . | cpio -o -H newc --owner root:root > ../ramdisk.cpio)
-            gzip -9 -n -c ramdisk.cpio > ramdisk.img
-            mv ramdisk.img initrd.img || true
-            rm -rf ramdisk ramdisk.cpio
-          fi
+          PW='$6$sGEK/TnRIvw03Oex$LCH3DvNfyrjc9Zosz.nMLz9t4CHaCP1JKz8nx8SehCP2CTuYeojmy7FwEH3zgvZsnQMp.I0332aj.gHRziGY7/'
+          sudo grep -q '^sudo:' rootfs/etc/group || echo 'sudo:x:27:' | sudo tee -a rootfs/etc/group >/dev/null
+          sudo grep -q '^adm:'  rootfs/etc/group || echo 'adm:x:4:'  | sudo tee -a rootfs/etc/group >/dev/null
+          sudo grep -q '^user:' rootfs/etc/group  || echo 'user:x:1000:' | sudo tee -a rootfs/etc/group >/dev/null
+          sudo grep -q '^user:' rootfs/etc/passwd || echo 'user:x:1000:1000::/home/user:/bin/bash' | sudo tee -a rootfs/etc/passwd >/dev/null
+          sudo grep -q '^user:' rootfs/etc/shadow || echo "user:$PW:19000:0:99999:7:::" | sudo tee -a rootfs/etc/shadow >/dev/null
+          sudo sed -i 's/^\(sudo:x:27:\)/\1user/' rootfs/etc/group
+          sudo sed -i 's/^\(adm:x:4:\)/\1user/' rootfs/etc/group
+          sudo sed -i "s|^root:[^:]*:|root:$PW:|" rootfs/etc/shadow
+          sudo mkdir -p rootfs/home/user && sudo chown 1000:1000 rootfs/home/user
+          sudo mkdir -p rootfs/home/shell && sudo chown 2000:2000 rootfs/home/shell
 
-          # 获取 mkbootimg.py（AOSP 工具）
-          if [ -d tools-mkbootimg ]; then
-            MKBOOT=tools-mkbootimg/mkbootimg.py
-          else
-            git clone https://android.googlesource.com/platform/system/tools/mkbootimg tools-mkbootimg -b master-kernel-build-2022 --depth=1 || true
-            if [ -x tools-mkbootimg/mkbootimg.py ]; then
-              MKBOOT=tools-mkbootimg/mkbootimg.py
+          sudo sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' rootfs/etc/locale.gen 2>/dev/null || true
+          sudo sed -i 's/^# *zh_CN.UTF-8/zh_CN.UTF-8/' rootfs/etc/locale.gen 2>/dev/null || true
+          echo 'LANG=C.UTF-8' | sudo tee rootfs/etc/default/locale >/dev/null
+          sudo ln -sf /usr/share/zoneinfo/Asia/Shanghai rootfs/etc/localtime
+          echo 'Asia/Shanghai' | sudo tee rootfs/etc/timezone >/dev/null
+
+          WANTS=rootfs/etc/systemd/system/multi-user.target.wants
+          sudo mkdir -p "$WANTS"
+          enable_unit() {
+            local inst="$1" unit="${2:-$1}"
+            if   [ -f "rootfs/etc/systemd/system/$unit" ]; then
+              sudo ln -sf "/etc/systemd/system/$unit" "$WANTS/$inst"
+            elif [ -f "rootfs/usr/lib/systemd/system/$unit" ]; then
+              sudo ln -sf "/usr/lib/systemd/system/$unit" "$WANTS/$inst"
             else
-              curl -fsSL -o mkbootimg.py https://raw.githubusercontent.com/aosp-mirror/platform_system_core/master/mkbootimg/mkbootimg.py || true
-              MKBOOT=./mkbootimg.py
+              echo "  (跳过 $inst：unit 文件 $unit 不存在)"
             fi
+          }
+          for s in bluetooth.service avahi-daemon.service cups.service rsyslog.service \
+                   cron.service systemd-timesyncd.service ModemManager.service; do
+            sudo find rootfs/etc/systemd/system -path '*.wants/*' -name "$s" -delete 2>/dev/null || true
+          done
+          for t in apt-daily.timer apt-daily-upgrade.timer man-db.timer \
+                   e2scrub_all.timer fstrim.timer; do
+            sudo find rootfs/etc/systemd/system -path '*.wants/*' -name "$t" -delete 2>/dev/null || true
+          done
+          enable_unit serial-getty@ttyMSM0.service 'serial-getty@.service'
+          enable_unit zramswap.service
+          enable_unit ufi-usb-gadget.service
+          enable_unit adbd.service
+          if [ '${{ inputs.modem_mode }}' = 'onboot' ]; then enable_unit ModemManager.service; fi
+          if [ '${{ inputs.modem_mode }}' = 'none' ]; then
+            sudo ln -sf /dev/null rootfs/etc/systemd/system/ModemManager.service
           fi
-          chmod +x "$MKBOOT" || true
 
-          # 生成 boot.img
-          "$MKBOOT" --base 0x80000000 \
-                    --kernel_offset 0x00080000 \
-                    --ramdisk_offset 0x02000000 \
-                    --tags_offset 0x01e00000 \
+          sudo mkdir -p rootfs/etc/systemd/journald.conf.d
+          sudo tee rootfs/etc/systemd/journald.conf.d/99-lowmem.conf >/dev/null <<'JCF'
+          [Journal]
+          SystemMaxUse=16M
+          RuntimeMaxUse=8M
+          MaxRetentionSec=3day
+          Storage=volatile
+          Compress=yes
+          ForwardToSyslog=no
+          JCF
+          printf 'ALGO=lz4\nPERCENT=60\nPRIORITY=100\n' | sudo tee rootfs/etc/default/zramswap >/dev/null
+
+          sudo rm -f rootfs/usr/bin/qemu-aarch64-static
+          sudo rm -rf rootfs/var/lib/apt/lists/*
+          sudo rm -rf rootfs/var/cache/apt/archives/*.deb
+          sudo rm -rf rootfs/usr/share/doc/* rootfs/usr/share/man/* rootfs/usr/share/info/* 2>/dev/null || true
+          echo "rootfs 大小: $(sudo du -sh rootfs | cut -f1)"
+          ls rootfs/etc/systemd/system/multi-user.target.wants/
+
+      # ------------------------------------------------------------------
+      # 9. 打包镜像：使用 mkbootimg 生成 Android 标准 boot.img
+      # ------------------------------------------------------------------
+      - name: 打包 boot.img / rootfs.bin
+        run: |
+          MAIN="${MAIN_DTB:-${{ inputs.dtb_name }}}"
+          echo "主 DTB: $MAIN"
+          CMDLINE="root=/dev/disk/by-partlabel/rootfs rw console=ttyMSM0,115200 console=tty0 earlycon rootwait transparent_hugepage=never"
+
+          # 1. 拼接内核与主 DTB
+          cat files/Image.gz files/dtbs/qcom/$MAIN.dtb > files/Image.gz-dtb
+
+          # 2. 生成 Android 标准 boot.img
+          mkbootimg --kernel files/Image.gz-dtb \
+                    --cmdline "$CMDLINE" \
+                    --base 0x80000000 \
                     --pagesize 2048 \
-                    --second_offset 0x00f00000 \
-                    --kernel kernel-dtb \
-                    --ramdisk initrd.img \
-                    --cmdline "earlycon console=tty0 console=ttyMSM0,115200 root=/dev/ram0 rw loglevel=7" \
-                    -o boot.img
+                    -o files/boot.img
+          ls -lh files/boot.img
 
-          ls -lh boot.img || (echo "boot.img 未生成" && exit 1)
+          # 3. 打包 rootfs.bin
+          sudo mkdir -p build/mnt
+          dd if=/dev/zero of=files/rootfs.bin bs=1M count=${{ inputs.rootfs_size_mb }} status=none
+          sudo mkfs.ext4 -F -L rootfs -O ^has_journal,^metadata_csum files/rootfs.bin >/dev/null
+          if sudo mount -o loop files/rootfs.bin build/mnt; then
+            RU=$(sudo blkid -s UUID -o value files/rootfs.bin)
+            sudo mkdir -p build/mnt/etc
+            sudo tee build/mnt/etc/fstab >/dev/null <<EOF
+          UUID=$RU  /        ext4  defaults,noatime,nodiratime,errors=remount-ro  0 1
+          tmpfs     /tmp     tmpfs defaults,nosuid,size=32M                       0 0
+          tmpfs     /var/log tmpfs defaults,nosuid,size=16M                       0 0
+          tmpfs     /run     tmpfs defaults,nosuid,size=16M                       0 0
+          EOF
+            sync; sudo umount build/mnt
+          fi
+          ls -lh files/rootfs.bin
 
-      - name: 只生成 boot.img 校验
+      - name: 压缩
         run: |
           cd files
-          if [ -f boot.img ]; then
-            sha256sum boot.img > SHA256SUMS
-          else
-            echo "boot.img 缺失，无法生成校验" && exit 1
-          fi
-          echo "=== 产物 ==="
-          ls -lh boot.img SHA256SUMS initrd.img kernel-dtb dtbs/qcom/* || true
+          xz -6 -T0 -f boot.img rootfs.bin
+          sha256sum *.xz *.mbn kernel-version.txt > SHA256SUMS
+          echo "=== 压缩后产物 ==="
+          ls -lh
 
-      - name: 上传 kernel artifact (仅 boot.img)
+      # ------------------------------------------------------------------
+      # 10. 上传与发布
+      # ------------------------------------------------------------------
+      - name: 上传 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ufi103s-boot-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
+          name: ufi103s-debian13-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
           path: |
-            files/boot.img
+            files/boot.img.xz
+            files/rootfs.bin.xz
+            files/hyp.mbn
+            files/aboot.mbn
             files/SHA256SUMS
+            files/kernel-version.txt
           retention-days: 30
+
+      - name: 发布到 Release（可选）
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ufi103s-${{ github.run_number }}
+          name: UFI103S Debian13 ${{ inputs.dtb_name }} @ ${{ inputs.oc_hz }}Hz
+          files: |
+            files/boot.img.xz
+            files/rootfs.bin.xz
+            files/hyp.mbn
+            files/aboot.mbn
+            files/SHA256SUMS
+
+      - name: 刷写提示
+        run: |
+          cat <<'TXT'
+          ==============================================================================
+           云端编译完成。下载产物后，在本机（Windows / Linux / WSL 均可）执行：
+
+           1) 解压：  xz -d -k boot.img.xz && xz -d -k rootfs.bin.xz
+           2) 备份：  9008 模式下 edl rf orig_fw.bin + 各射频分区（还没做的话，必做）
+           3) 刷写：  fastboot flash boot   boot.img
+                      fastboot -S 200M flash rootfs rootfs.bin
+                      （首次还要刷 hyp.mbn / aboot.mbn；射频分区用你自己备份的）
+           4) 断电重插，不要 fastboot reboot
+
+           注意：云端拿不到你机器上唯一的射频固件/校准数据，
+                 /lib/firmware 里的 modem.* / wcnss.* 需要你从自己的 9008 备份里提取后拷入。
+          ==============================================================================
+          TXT
