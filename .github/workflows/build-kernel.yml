@@ -144,7 +144,7 @@ jobs:
             python3 tools/opp-overclock.py "${ARGS[@]}" || true
           fi
 
-      - name: 编译内核
+      - name: 编译内核并生成 initrd
         run: |
           cd src/linux
           export PATH="/usr/lib/ccache:$PATH"
@@ -167,10 +167,26 @@ jobs:
             tail -60 /tmp/kbuild.log
             exit 1
           fi
+          
+          # 安装模块到临时目录并生成 initrd 需要的内核版本目录
           make -j"$(nproc)" modules_install \
                INSTALL_MOD_PATH=../../build/modules \
                INSTALL_MOD_STRIP=1 DEPMOD=true
           make kernelrelease > ../../files/kernel-version.txt
+
+          # 额外在宿主机安装 initramfs-tools 以便生成 initrd.img
+          sudo apt-get update && sudo apt-get install -y initramfs-tools
+          
+          # 获取编译出来的具体内核版本号（例如 6.x.x-msm8916）
+          KVER=$(cat ../../files/kernel-version.txt)
+          
+          # 将编译好的模块复制到系统的 /lib/modules 供 mkinitramfs 读取
+          sudo mkdir -p /lib/modules/$KVER
+          sudo cp -a ../../build/modules/lib/modules/$KVER/. /lib/modules/$KVER/
+          
+          # 生成 initrd.img
+          sudo mkinitramfs -o ../../files/initrd.img $KVER
+          sudo chmod 666 ../../files/initrd.img
 
       - name: 收内核产物
         run: |
@@ -318,21 +334,13 @@ jobs:
       - name: 打包 boot.img / rootfs.bin
         run: |
           MAIN="${MAIN_DTB:-${{ inputs.dtb_name }}}"
-          CMDLINE="root=/dev/disk/by-partlabel/rootfs rw console=ttyMSM0,115200 console=tty0 earlycon rootwait transparent_hugepage=never"
-
-          git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
-
-          cat files/Image.gz files/dtbs/qcom/$MAIN.dtb > files/Image.gz-dtb
-          python3 /tmp/mkbootimg/mkbootimg.py \
-                    --kernel files/Image.gz-dtb \
-                    --cmdline "$CMDLINE" \
-                    --base 0x80000000 \
-                    --pagesize 2048 \
-                    -o files/boot.img
-
+          
+          # 先创建 rootfs 镜像并获取其 UUID，以便让 cmdline 使用正确的 UUID 挂载根目录
           sudo mkdir -p build/mnt
           dd if=/dev/zero of=files/rootfs.bin bs=1M count=${{ inputs.rootfs_size_mb }} status=none
           sudo mkfs.ext4 -F -L rootfs -O ^has_journal,^metadata_csum files/rootfs.bin >/dev/null
+          
+          RU=""
           if sudo mount -o loop files/rootfs.bin build/mnt; then
             RU=$(sudo blkid -s UUID -o value files/rootfs.bin)
             sudo mkdir -p build/mnt/etc
@@ -344,6 +352,26 @@ jobs:
           EOF
             sync; sudo umount build/mnt
           fi
+
+          # 使用带有 UUID 的命令行，确保内核能准确找到根分区
+          CMDLINE="earlycon console=tty0 console=ttyMSM0,115200 root=UUID=$RU rw loglevel=7"
+
+          # 克隆支持完整参数的 mkbootimg 工具（使用与另一个脚本一致的 master-kernel-build 分支）
+          git clone https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg -b master-kernel-build-2022 --depth=1
+
+          cat files/Image.gz files/dtbs/qcom/$MAIN.dtb > files/Image.gz-dtb
+          
+          # 使用标准的 MSM8916 内存偏移量和 initrd 进行打包
+          python3 /tmp/mkbootimg/mkbootimg.py \
+                    --kernel files/Image.gz-dtb \
+                    --ramdisk files/initrd.img \
+                    --cmdline "$CMDLINE" \
+                    --base 0x80000000 \
+                    --kernel_offset 0x00080000 \
+                    --ramdisk_offset 0x02000000 \
+                    --tags_offset 0x01e00000 \
+                    --pagesize 2048 \
+                    -o files/boot.img
 
       - name: 压缩
         run: |
