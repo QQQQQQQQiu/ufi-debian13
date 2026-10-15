@@ -76,6 +76,8 @@ jobs:
 
       - name: 安装交叉编译与打包依赖
         run: |
+          set -euxo pipefail
+
           sudo apt-get -o Acquire::Retries=5 \
                        -o Acquire::http::Timeout=60 \
                        -o Acquire::https::Timeout=60 update
@@ -93,11 +95,70 @@ jobs:
             dwarves libelf-dev mkbootimg \
             python3 python3-pip git curl ca-certificates ccache
 
-          # 修复：mkbootimg 依赖 gki 模块，GitHub runner 默认没有它
-          # 先尝试 apt 包，如果没有，就回退到 pip
-          sudo apt-get install -y python3-gki 2>/dev/null || true
-          sudo python3 -m pip install --upgrade pip setuptools wheel || true
-          sudo python3 -m pip install --no-cache-dir gki || sudo pip3 install --no-cache-dir gki || true
+          install_gki() {
+            echo "==> trying system package: python3-gki"
+            if sudo apt-get install -y python3-gki >/tmp/gki-apt.log 2>&1; then
+              echo "python3-gki installed via apt"
+              return 0
+            fi
+
+            echo "python3-gki not available from current repo; fetching Debian trixie package"
+            sudo tee /etc/apt/sources.list.d/debian-trixie.list >/dev/null <<'EOF'
+          deb http://deb.debian.org/debian trixie main
+          EOF
+            sudo apt-get -o Acquire::Retries=5 \
+                         -o Acquire::http::Timeout=60 \
+                         -o Acquire::https::Timeout=60 update >/tmp/gki-apt-update.log 2>&1 || true
+
+            local tmpdir
+            tmpdir="$(mktemp -d)"
+            pushd "$tmpdir" >/dev/null
+            if ! apt-get download python3-gki >/tmp/gki-download.log 2>&1; then
+              echo "Failed to download python3-gki .deb"
+              cat /tmp/gki-download.log || true
+              popd >/dev/null
+              rm -rf "$tmpdir"
+              sudo rm -f /etc/apt/sources.list.d/debian-trixie.list
+              return 1
+            fi
+
+            local deb
+            for deb in python3-gki*.deb; do
+              dpkg-deb -x "$deb" extracted
+            done
+
+            local pylib
+            pylib="$(python3 - <<'PY'
+import sysconfig
+print(sysconfig.get_paths()["platlib"])
+PY
+)"
+
+            sudo mkdir -p "$pylib"
+            local gki_src
+            gki_src="$(find /tmp/gki-deb -path '*/dist-packages/gki' -o -path '*/site-packages/gki' | head -n 1 || true)"
+            if [ -n "$gki_src" ]; then
+              sudo cp -a "$gki_src" "$pylib/"
+              echo "gki copied from Debian package: $gki_src -> $pylib"
+            else
+              echo "ERROR: could not locate gki package in extracted Debian files"
+              find /tmp/gki-deb -maxdepth 5 -type d | head -50 || true
+              popd >/dev/null
+              rm -rf "$tmpdir"
+              sudo rm -f /etc/apt/sources.list.d/debian-trixie.list
+              return 1
+            fi
+
+            popd >/dev/null
+            rm -rf "$tmpdir"
+            sudo rm -f /etc/apt/sources.list.d/debian-trixie.list
+            return 0
+          }
+
+          install_gki || {
+            echo "install_gki failed"
+            exit 1
+          }
 
           python3 - <<'PY'
           try:
@@ -491,5 +552,5 @@ jobs:
 
            注意：云端拿不到你机器上唯一的射频固件/校准数据，
                  /lib/firmware 里的 modem.* / wcnss.* 需要你从自己的 9008 备份里提取后拷入。
-          ==============================================================================
+           ==============================================================================
           TXT
