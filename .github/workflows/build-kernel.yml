@@ -1,11 +1,11 @@
-name: UFI103S Debian 13 Firmware
+name: kernel 
 on:
   workflow_dispatch:
     inputs:
       dtb_name:
         description: '主 DTB'
         required: true
-        default: 'msm8916-thwc-ufi001c'
+        default: 'msm8916-yiming-uz801v3'
         type: choice
         options:
           - msm8916-thwc-ufi001c
@@ -23,7 +23,7 @@ on:
       modem_mode:
         description: '4G基带模式'
         required: true
-        default: 'ondemand'
+        default: 'none'
         type: choice
         options: [ondemand, onboot, none]
       kernel_ref:
