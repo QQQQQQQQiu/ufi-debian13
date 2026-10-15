@@ -1,4 +1,5 @@
 name: build-kernel
+
 on:
   workflow_dispatch:
     inputs:
@@ -96,75 +97,27 @@ jobs:
             python3 python3-pip git curl ca-certificates ccache
 
           install_gki() {
-            echo "==> trying system package: python3-gki"
+            echo "==> attempt 1: apt install python3-gki"
             if sudo apt-get install -y python3-gki >/tmp/gki-apt.log 2>&1; then
               echo "python3-gki installed via apt"
               return 0
             fi
+            echo "apt install failed; see /tmp/gki-apt.log"
 
-            echo "python3-gki not available from current repo; attempting to fetch Debian trixie package"
-            sudo tee /etc/apt/sources.list.d/debian-trixie.list >/dev/null <<'EOF'
-          deb http://deb.debian.org/debian trixie main
-          EOF
+            echo "==> attempt 2: pip install gki into user site"
+            export PATH="$HOME/.local/bin:$PATH"
+            python3 -m pip install --user --upgrade pip setuptools wheel >/tmp/gki-pip-setup.log 2>&1 || true
 
-            if ! sudo apt-get -o Acquire::Retries=5 \
-                             -o Acquire::http::Timeout=60 \
-                             -o Acquire::https::Timeout=60 update >/tmp/gki-apt-update.log 2>&1; then
-              echo "apt-get update failed; see /tmp/gki-apt-update.log"
-              sudo rm -f /etc/apt/sources.list.d/debian-trixie.list
-              return 1
+            if python3 -m pip install --user gki >/tmp/gki-pip.log 2>&1; then
+              echo "gki installed via pip"
+              return 0
             fi
+            echo "pip install gki failed; see /tmp/gki-pip.log"
 
-            local tmpdir
-            tmpdir="$(mktemp -d)"
-            pushd "$tmpdir" >/dev/null
-
-            if ! apt-get download python3-gki >/tmp/gki-download.log 2>&1; then
-              echo "Failed to download python3-gki .deb; see /tmp/gki-download.log"
-              cat /tmp/gki-download.log || true
-              popd >/dev/null
-              rm -rf "$tmpdir"
-              sudo rm -f /etc/apt/sources.list.d/debian-trixie.list
-              return 1
-            fi
-
-            mkdir -p extracted
-            local deb
-            for deb in python3-gki*.deb; do
-              dpkg-deb -x "$deb" extracted || true
-            done
-
-            local pylib
-            pylib="$(python3 - <<'PY'
-          import sysconfig
-          print(sysconfig.get_paths()["platlib"])
-          PY
-          )"
-
-            sudo mkdir -p "$pylib"
-
-            local gki_src
-            gki_src="$(find "$tmpdir/extracted" \
-              \( -path '*/dist-packages/gki' -o -path '*/site-packages/gki' \) \
-              -print 2>/dev/null | head -n 1 || true)"
-
-            if [ -n "$gki_src" ]; then
-              sudo cp -a "$gki_src" "$pylib/"
-              echo "gki copied from Debian package: $gki_src -> $pylib"
-            else
-              echo "ERROR: could not locate gki package in extracted Debian files"
-              echo "Listing contents of $tmpdir (first levels):"
-              find "$tmpdir" -maxdepth 4 -type d | head -50 || true
-              popd >/dev/null
-              rm -rf "$tmpdir"
-              sudo rm -f /etc/apt/sources.list.d/debian-trixie.list
-              return 1
-            fi
-
-            popd >/dev/null
-            rm -rf "$tmpdir"
-            sudo rm -f /etc/apt/sources.list.d/debian-trixie.list
-            return 0
+            echo "ERROR: gki unavailable from apt and pip on this runner." >&2
+            echo "This is the stable policy to avoid temporary Debian trixie sources." >&2
+            echo "If the package is not on PyPI, vendor the module into this repo or provide a wheel URL." >&2
+            return 1
           }
 
           install_gki || {
