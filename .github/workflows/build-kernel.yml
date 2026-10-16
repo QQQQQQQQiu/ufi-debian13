@@ -80,34 +80,6 @@ jobs:
           git -C linux branch --show-current
           echo "内核版本: $(git -C linux describe --tags 2>/dev/null || git -C linux rev-parse --short HEAD)"
 
-      # ------------------------------------------------------------------
-      # 超频补丁：先 --check，再按需要克隆最高频点生成新节点
-      # ------------------------------------------------------------------
-      - name: 应用 CPU 超频补丁
-        run: |
-          DTSI=src/linux/arch/arm64/boot/dts/qcom/msm8916.dtsi
-
-          python3 tools/opp-overclock.py --check --dtsi "$DTSI" \
-            || echo "!! --check 未通过，跳过超频（不影响出包）"
-
-          if [ "${{ inputs.oc_hz }}" != "0" ]; then
-            ARGS=(--apply --hz "${{ inputs.oc_hz }}" --dtsi "$DTSI")
-            [ -n "${{ inputs.oc_microvolt }}" ] && ARGS+=(--microvolt "${{ inputs.oc_microvolt }}")
-            python3 tools/opp-overclock.py "${ARGS[@]}" \
-              || echo "!! 超频补丁未应用，按内核默认频率出包"
-          else
-            echo "oc_hz=0，跳过超频"
-          fi
-
-          echo "=== 补丁后 OPP 复核 ==="
-          python3 tools/opp-overclock.py --check --dtsi "$DTSI" || true
-          echo "=== 生成的节点内容 ==="
-          grep -A3 "opp-${{ inputs.oc_hz }}" "$DTSI" || echo "(未插入，按默认频率)"
-
-      # ------------------------------------------------------------------
-      # 生成 .config 后直接走 bindeb-pkg，让内核自带的 debian 规则
-      # 一次性产出 linux-image / linux-headers / linux-libc-dev 等 deb
-      # ------------------------------------------------------------------
       - name: 编译内核 deb 升级包
         run: |
           cd src/linux
@@ -138,7 +110,7 @@ jobs:
           mkdir -p ../../files
           pwd
           ls -h ./
-          cp .config ../../files/
+          cp .config ../../files/cfg
           echo "-----"
 
           #chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
@@ -191,21 +163,9 @@ jobs:
         with:
           name: linux-deb-${{ inputs.kernel_ref || 'default' }}-${{ inputs.oc_hz }}
           path: |
-            files/.config
+            files/cfg
             files/*.deb
             files/Image.gz
             files/SHA256SUMS
             files/kernel-version.txt
           retention-days: 30
-
-      - name: 发布到 Release（可选）
-        if: ${{ inputs.publish_release }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: linux-deb-${{ github.run_number }}
-          name: Linux Kernel deb ${{ inputs.kernel_ref || 'default' }} @ ${{ inputs.oc_hz }}Hz
-          files: |
-            files/*.deb
-            files/Image.gz
-            files/SHA256SUMS
-            files/kernel-version.txt
