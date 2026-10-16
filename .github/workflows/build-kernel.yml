@@ -149,6 +149,8 @@ jobs:
 
           KVER=$(make kernelrelease)
           mkdir -p ../../files
+          ls -h
+          cp .config ../../files/ 
           echo "$KVER" > ../../files/kernel-version.txt
           echo "内核版本: $KVER"
 
@@ -161,7 +163,7 @@ jobs:
           echo "=== 收集生成的 .deb 包 ==="
           ls -lh src/ || true
           cp src/*.deb files/ 2>/dev/null || true
-          cp .config files/ 
+          
 
           # 顺手留一份 Image.gz 和主 DTB，方便手动刷机/排查
           cp src/linux/arch/arm64/boot/Image.gz files/ 2>/dev/null || true
