@@ -98,20 +98,22 @@ jobs:
           export PATH="/tmp/dpkgshim:$PATH"
           which dpkg-buildpackage
 
-          for DC in msm8916_defconfig qcom_defconfig defconfig; do
-            echo "--- 尝试 defconfig: $DC ---"
-            if make "$DC" 2>&1 | tail -3; then
-              test -f .config && break
-            fi
-          done
+          #for DC in msm8916_defconfig qcom_defconfig defconfig; do
+          #  echo "--- 尝试 defconfig: $DC ---"
+          #  if make "$DC" 2>&1 | tail -3; then
+          #    test -f .config && break
+          #  fi
+          #done
           
-          test -f .config || { echo "!! 无法生成 .config"; exit 1; }
+          cp ../../kernel-fragments/kcfg ./.config
           echo "-----"
           mkdir -p ../../files
           pwd
-          ls -h ./
+          ls -a ./
           cp .config ../../files/cfg
           echo "-----"
+          
+          test -f .config || { echo "!! 无法生成 .config"; exit 1; }
 
           #chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
           #if [ -f ../../kernel-fragments/ufi-lowmem.config ]; then
