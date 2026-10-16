@@ -134,6 +134,12 @@ jobs:
           done
           
           test -f .config || { echo "!! 无法生成 .config"; exit 1; }
+          echo "-----"
+          mkdir -p ../../files
+          pwd
+          ls -h ./
+          cp .config ../../files/
+          echo "-----"
 
           #chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
           #if [ -f ../../kernel-fragments/ufi-lowmem.config ]; then
@@ -149,8 +155,7 @@ jobs:
 
           KVER=$(make kernelrelease)
           mkdir -p ../../files
-          ls -h
-          cp .config ../../files/ 
+          
           echo "$KVER" > ../../files/kernel-version.txt
           echo "内核版本: $KVER"
 
