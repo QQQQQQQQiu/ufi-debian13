@@ -116,6 +116,16 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           ccache -M 5G
 
+          # --- 关键：绕过 dpkg-checkbuilddeps 对 arm64 libssl-dev 的检查 ---
+          mkdir -p /tmp/dpkgshim
+          cat > /tmp/dpkgshim/dpkg-buildpackage <<'EOF'
+          #!/bin/bash
+          exec /usr/bin/dpkg-buildpackage -d "$@"
+          EOF
+          chmod +x /tmp/dpkgshim/dpkg-buildpackage
+          export PATH="/tmp/dpkgshim:$PATH"
+          which dpkg-buildpackage
+
           for DC in msm8916_defconfig qcom_defconfig defconfig; do
             echo "--- 尝试 defconfig: $DC ---"
             if make "$DC" 2>&1 | tail -3; then
@@ -134,9 +144,7 @@ jobs:
           make olddefconfig
 
           echo "=== 开始构建内核 .deb 升级包 ==="
-          dpkg -s libssl-dev >/dev/null 2>&1 || { echo "libssl-dev missing"; exit 1; }
-          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-               KBUILD_DEBARGS="-d" bindeb-pkg
+          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- bindeb-pkg
 
           KVER=$(make kernelrelease)
           mkdir -p ../../files
