@@ -161,7 +161,7 @@ jobs:
       - name: 上传 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-deb-${{ inputs.kernel_ref || 'default' }}-${{ inputs.oc_hz }}
+          name: dist
           path: |
             files/cfg
             files/*.deb
