@@ -132,6 +132,7 @@ jobs:
               test -f .config && break
             fi
           done
+          
           test -f .config || { echo "!! 无法生成 .config"; exit 1; }
 
           chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
@@ -158,8 +159,9 @@ jobs:
         run: |
           mkdir -p files
           echo "=== 收集生成的 .deb 包 ==="
-          ls -lh src/*.deb || true
+          ls -lh src/ || true
           cp src/*.deb files/ 2>/dev/null || true
+          cp .config files/ 
 
           # 顺手留一份 Image.gz 和主 DTB，方便手动刷机/排查
           cp src/linux/arch/arm64/boot/Image.gz files/ 2>/dev/null || true
@@ -182,6 +184,7 @@ jobs:
         with:
           name: linux-deb-${{ inputs.kernel_ref || 'default' }}-${{ inputs.oc_hz }}
           path: |
+            files/.config
             files/*.deb
             files/Image.gz
             files/SHA256SUMS
