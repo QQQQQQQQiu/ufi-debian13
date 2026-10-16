@@ -82,8 +82,7 @@ jobs:
       # ------------------------------------------------------------------
       - name: 安装交叉编译与打包依赖
         run: |
-          # runner 默认的 azure.archive.ubuntu.com 有时很慢（实测低到 ~240kB/s，
-          # 137MB 要下近 10 分钟）。加重试避免中途断流。
+          sudo dpkg --add-architecture arm64 || true
           sudo apt-get -o Acquire::Retries=5 \
                        -o Acquire::http::Timeout=60 \
                        -o Acquire::https::Timeout=60 update
@@ -100,6 +99,7 @@ jobs:
             e2fsprogs dosfstools util-linux parted \
             dwarves libelf-dev libdw-dev \
             python3 git curl ca-certificates ccache dpkg-dev debhelper
+          sudo apt-get install -y --no-install-recommends libssl-dev:arm64 || true  
           sudo update-binfmts --enable qemu-aarch64 || true
           echo "=== qemu binfmt ==="
           ls /proc/sys/fs/binfmt_misc/ | grep -i qemu || echo "(未见，debootstrap 第二阶段可能失败)"
@@ -244,6 +244,7 @@ jobs:
           # 【新增】使用内核自带的 bindeb-pkg 目标编译 deb 包
           # 注意：交叉编译 deb 需要把 ARCH 和 CROSS_COMPILE 传给 debian 目标
           echo "=== 开始构建内核 .deb 升级包 ==="
+          dpkg -s libssl-dev >/dev/null 2>&1 || { echo "libssl-dev missing"; exit 1; }
           make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KBUILD_DEBARGS="-d" bindeb-pkg
 
           # modules_install 维持原样给制作 rootfs 使用
