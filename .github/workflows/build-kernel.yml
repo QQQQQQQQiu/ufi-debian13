@@ -71,7 +71,7 @@ jobs:
           df -h /
 
       - name: 检出本套件
-        uses: actions/checkout@v4[cite: 1]
+        uses: actions/checkout@v4
 
       - name: 安装交叉编译与打包依赖
         run: |
@@ -94,7 +94,7 @@ jobs:
           sudo update-binfmts --enable qemu-aarch64 || true
 
       - name: 恢复 ccache
-        uses: actions/cache@v4[cite: 1]
+        uses: actions/cache@v4
         with:
           path: ~/.ccache
           key: ccache-msm8916-${{ inputs.kernel_ref || 'default' }}-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
