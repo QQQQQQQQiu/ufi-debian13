@@ -413,4 +413,33 @@ jobs:
             files/aboot.mbn
             files/SHA256SUMS
             files/*.deb
+            files/kernel-version.txtSHA256SUMS
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ufi103s-debian13-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
+          path: |
+            files/boot.img.xz
+            files/rootfs.bin.xz
+            files/hyp.mbn
+            files/aboot.mbn
+            files/SHA256SUMS
+            files/kernel-version.txt
+            files/*.deb
+          retention-days: 30
+
+      - name: 发布到 Release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ufi103s-${{ github.run_number }}
+          name: UFI103S Debian13 ${{ inputs.dtb_name }} @ ${{ inputs.oc_hz }}Hz
+          files: |
+            files/boot.img.xz
+            files/rootfs.bin.xz
+            files/hyp.mbn
+            files/aboot.mbn
+            files/SHA256SUMS
+            files/*.deb
             files/kernel-version.txt
