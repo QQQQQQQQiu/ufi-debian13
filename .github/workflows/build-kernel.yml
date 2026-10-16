@@ -134,16 +134,6 @@ jobs:
           python3 qtestsign/qtestsign.py hyp  qhypstub/qhypstub.elf -o ../files/hyp.mbn
           python3 qtestsign/qtestsign.py aboot "$LKIMG" -o ../files/aboot.mbn
 
-      - name: 应用 CPU 超频补丁
-        run: |
-          DTSI=src/linux/arch/arm64/boot/dts/qcom/msm8916.dtsi
-          python3 tools/opp-overclock.py --check --dtsi "$DTSI" || true
-          if [ "${{ inputs.oc_hz }}" != "0" ]; then
-            ARGS=(--apply --hz "${{ inputs.oc_hz }}" --dtsi "$DTSI")
-            [ -n "${{ inputs.oc_microvolt }}" ] && ARGS+=(--microvolt "${{ inputs.oc_microvolt }}")
-            python3 tools/opp-overclock.py "${ARGS[@]}" || true
-          fi
-
       - name: 编译内核并生成 initrd 与 deb 包
         run: |
           cd src/linux
@@ -358,7 +348,7 @@ jobs:
           fi
 
           # 使用带有 UUID 的命令行，确保内核能准确找到根分区
-          CMDLINE="earlycon console=tty0 console=ttyMSM0,115200 root=/dev/mmcblk0p14 rw loglevel=7"
+          CMDLINE="earlycon root=/dev/mmcblk0p14 console=ttyMSM0,115200 no_framebuffer=true rw androidboot.emmc=true androidboot.serialno=11c722 androidboot.baseband=msm mdss_mdp.panel=0:dsi:0:"
 
           # 克隆支持完整参数的 mkbootimg 工具
           git clone https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg -b master-kernel-build-2022 --depth=1
