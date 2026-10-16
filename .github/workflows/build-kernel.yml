@@ -99,7 +99,7 @@ jobs:
             debootstrap qemu-user-static binfmt-support \
             e2fsprogs dosfstools util-linux parted \
             dwarves libelf-dev \
-            python3 git curl ca-certificates ccache dpkg-dev
+            python3 git curl ca-certificates ccache dpkg-dev debhelper
           sudo update-binfmts --enable qemu-aarch64 || true
           echo "=== qemu binfmt ==="
           ls /proc/sys/fs/binfmt_misc/ | grep -i qemu || echo "(未见，debootstrap 第二阶段可能失败)"
@@ -428,7 +428,7 @@ jobs:
       - name: 打包 boot.bin / rootfs.bin
         run: |
           MAIN="${MAIN_DTB:-${{ inputs.dtb_name }}}"
-          CMDLINE="root=/dev/disk/by-partlabel/rootfs rw console=ttyMSM0,115200 console=tty0 earlycon rootwait transparent_hugepage=never"
+          CMDLINE="root=LABEL=DebianRoot rw console=ttyMSM0,115200 console=tty0 earlycon rootwait transparent_hugepage=never"
 
           sudo mkdir -p build/mnt build/bootstg/dtbs/qcom build/bootstg/extlinux
           sudo cp files/Image.gz build/bootstg/
