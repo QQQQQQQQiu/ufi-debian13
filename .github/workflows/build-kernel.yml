@@ -43,7 +43,7 @@ on:
         required: false
         default: false
         type: boolean
- 
+  
 env:
   DEBIAN_FRONTEND: noninteractive
   ARCH: arm64
@@ -73,25 +73,23 @@ jobs:
       - name: 检出本套件
         uses: actions/checkout@v4
 
-      - name: 安装交叉编译与打包依赖  
+      - name: 安装交叉编译与打包依赖
         run: |
-          sudo apt-get -o Acquire::Retries=5 \
-                   -o Acquire::http::Timeout=60 \
-                   -o Acquire::https::Timeout=60 update
-                   sudo apt-get -o Acquire::Retries=5 \
-                   -o Acquire::http::Timeout=60 \
-                   -o Acquire::https::Timeout=60 \
-                   install -y --no-install-recommends \
-          build-essential bc bison flex libssl-dev libncurses-dev \
-          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-          binutils-aarch64-linux-gnu \
-          gcc-arm-none-eabi binutils-arm-none-eabi \
-          kmod cpio rsync xz-utils zstd device-tree-compiler u-boot-tools \
-          debootstrap qemu-user-static binfmt-support \
-          e2fsprogs dosfstools util-linux parted \
-          dwarves libelf-dev dpkg-dev \
-          python3 git curl ca-certificates ccache \
-          debhelper-compat libdw-dev fakeroot
+          set -euo pipefail
+          sudo apt-get update -o Acquire::Retries=5 \
+            -o Acquire::http::Timeout=60 \
+            -o Acquire::https::Timeout=60
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libncurses-dev \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            gcc-arm-none-eabi binutils-arm-none-eabi \
+            kmod cpio rsync xz-utils zstd device-tree-compiler u-boot-tools \
+            debootstrap qemu-user-static binfmt-support \
+            e2fsprogs dosfstools util-linux parted \
+            dwarves libelf-dev dpkg-dev \
+            python3 git curl ca-certificates ccache \
+            debhelper-compat libdw-dev fakeroot
           sudo update-binfmts --enable qemu-aarch64 || true
 
       - name: 恢复 ccache
@@ -152,6 +150,11 @@ jobs:
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           ccache -M 5G
+
+          # 兜底：确保 bindeb-pkg 的基础依赖真正安装
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev
+
           for DC in msm8916_defconfig qcom_defconfig defconfig; do
             if make "$DC" 2>&1 >/dev/null; then
               test -f .config && break
@@ -169,7 +172,7 @@ jobs:
             tail -60 /tmp/kbuild.log
             exit 1
           fi
-          
+
           # 编译生成内核 Debian 包 (bindeb-pkg)
           if ! DEB_HOST_ARCH=$(dpkg --print-architecture) \
                make -j"$(nproc)" CC="ccache ${CROSS_COMPILE}gcc" bindeb-pkg > /tmp/deb.log 2>&1; then
@@ -185,14 +188,14 @@ jobs:
 
           # 额外在宿主机安装 initramfs-tools 以便生成 initrd.img
           sudo apt-get update && sudo apt-get install -y initramfs-tools
-          
+
           # 获取编译出来的具体内核版本号（例如 6.x.x-msm8916）
           KVER=$(cat ../../files/kernel-version.txt)
-          
+
           # 将编译好的模块复制到系统的 /lib/modules 供 mkinitramfs 读取
           sudo mkdir -p /lib/modules/$KVER
           sudo cp -a ../../build/modules/lib/modules/$KVER/. /lib/modules/$KVER/
-          
+
           # 生成 initrd.img
           sudo mkinitramfs -o ../../files/initrd.img $KVER
           sudo chmod 666 ../../files/initrd.img
@@ -345,12 +348,12 @@ jobs:
       - name: 打包 boot.img / rootfs.bin
         run: |
           MAIN="${MAIN_DTB:-${{ inputs.dtb_name }}}"
-          
+
           # 先创建 rootfs 镜像并获取其 UUID，以便让 cmdline 使用正确的 UUID 挂载根目录
           sudo mkdir -p build/mnt
           dd if=/dev/zero of=files/rootfs.bin bs=1M count=${{ inputs.rootfs_size_mb }} status=none
           sudo mkfs.ext4 -F -L rootfs -O ^has_journal,^metadata_csum files/rootfs.bin >/dev/null
-          
+
           RU=""
           if sudo mount -o loop files/rootfs.bin build/mnt; then
             RU=$(sudo blkid -s UUID -o value files/rootfs.bin)
@@ -372,7 +375,7 @@ jobs:
           git clone https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg -b master-kernel-build-2022 --depth=1
 
           cat files/Image.gz files/dtbs/qcom/$MAIN.dtb > files/Image.gz-dtb
-          
+
           # 使用标准的 MSM8916 内存偏移量和 initrd 进行打包
           python3 /tmp/mkbootimg/mkbootimg.py \
                     --kernel files/Image.gz-dtb \
