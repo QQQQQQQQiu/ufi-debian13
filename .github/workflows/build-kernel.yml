@@ -399,7 +399,7 @@ jobs:
 
       - name: 发布到 Release
         if: ${{ inputs.publish_release }}
-        uses: softprops/action-gh-release@v2[cite: 1]
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ufi103s-${{ github.run_number }}
           name: UFI103S Debian13 ${{ inputs.dtb_name }} @ ${{ inputs.oc_hz }}Hz
