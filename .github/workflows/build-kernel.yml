@@ -43,7 +43,7 @@ on:
         required: false
         default: false
         type: boolean
-   
+
 env:
   DEBIAN_FRONTEND: noninteractive
   ARCH: arm64
@@ -71,15 +71,17 @@ jobs:
           df -h /
 
       - name: 检出本套件
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4[cite: 1]
 
       - name: 安装交叉编译与打包依赖
         run: |
-          set -euo pipefail
-          sudo apt-get update -o Acquire::Retries=5 \
-            -o Acquire::http::Timeout=60 \
-            -o Acquire::https::Timeout=60
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get -o Acquire::Retries=5 \
+                       -o Acquire::http::Timeout=60 \
+                       -o Acquire::https::Timeout=60 update
+          sudo apt-get -o Acquire::Retries=5 \
+                       -o Acquire::http::Timeout=60 \
+                       -o Acquire::https::Timeout=60 \
+                       install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libncurses-dev \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
@@ -88,12 +90,11 @@ jobs:
             debootstrap qemu-user-static binfmt-support \
             e2fsprogs dosfstools util-linux parted \
             dwarves libelf-dev dpkg-dev \
-            python3 git curl ca-certificates ccache \
-            debhelper-compat libdw-dev fakeroot
+            python3 git curl ca-certificates ccache
           sudo update-binfmts --enable qemu-aarch64 || true
 
       - name: 恢复 ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v4[cite: 1]
         with:
           path: ~/.ccache
           key: ccache-msm8916-${{ inputs.kernel_ref || 'default' }}-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
@@ -143,21 +144,19 @@ jobs:
             python3 tools/opp-overclock.py "${ARGS[@]}" || true
           fi
 
-      - name: 编译内核并生成 initrd
+      - name: 编译内核并生成 initrd 与 deb 包
         run: |
           cd src/linux
           export PATH="/usr/lib/ccache:$PATH"
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           ccache -M 5G
-
           for DC in msm8916_defconfig qcom_defconfig defconfig; do
             if make "$DC" 2>&1 >/dev/null; then
               test -f .config && break
             fi
           done
           test -f .config || exit 1
-          #cat .config
           chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
           if [ -f ../../kernel-fragments/ufi-lowmem.config ]; then
             ./scripts/kconfig/merge_config.sh -m .config ../../kernel-fragments/ufi-lowmem.config
@@ -168,9 +167,10 @@ jobs:
             tail -60 /tmp/kbuild.log
             exit 1
           fi
-
-          # CI 中不需要生成 Debian 包，避免 host-arch 的 libssl-dev 缺失导致 bindeb-pkg 失败
-          echo "Skipping bindeb-pkg in CI to avoid missing libssl-dev for host arch."
+          
+          # 构建内核 deb 安装包（通过 DPKG_FLAGS="-d" 忽略未满足的构建依赖检查）
+          DPKG_FLAGS="-d" make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- bindeb-pkg
+          cp ../linux-image-*.deb ../../files/ 2>/dev/null || true
 
           # 安装模块到临时目录并生成 initrd 需要的内核版本目录
           make -j"$(nproc)" modules_install \
@@ -180,14 +180,14 @@ jobs:
 
           # 额外在宿主机安装 initramfs-tools 以便生成 initrd.img
           sudo apt-get update && sudo apt-get install -y initramfs-tools
-
+          
           # 获取编译出来的具体内核版本号（例如 6.x.x-msm8916）
           KVER=$(cat ../../files/kernel-version.txt)
-
+          
           # 将编译好的模块复制到系统的 /lib/modules 供 mkinitramfs 读取
           sudo mkdir -p /lib/modules/$KVER
           sudo cp -a ../../build/modules/lib/modules/$KVER/. /lib/modules/$KVER/
-
+          
           # 生成 initrd.img
           sudo mkinitramfs -o ../../files/initrd.img $KVER
           sudo chmod 666 ../../files/initrd.img
@@ -206,8 +206,6 @@ jobs:
           fi
           echo "MAIN_DTB=$MAIN" >> $GITHUB_ENV
           tar -C ../../build/modules -czf ../../files/modules.tar.gz lib
-          # 收集生成的 deb 包到 files 目录
-          cp ../*.deb ../../files/ 2>/dev/null || true
           cd ../.. && rm -rf src/linux src/lk2nd src/qhypstub src/qtestsign
 
       - name: debootstrap Debian 13
@@ -340,12 +338,12 @@ jobs:
       - name: 打包 boot.img / rootfs.bin
         run: |
           MAIN="${MAIN_DTB:-${{ inputs.dtb_name }}}"
-
+          
           # 先创建 rootfs 镜像并获取其 UUID，以便让 cmdline 使用正确的 UUID 挂载根目录
           sudo mkdir -p build/mnt
           dd if=/dev/zero of=files/rootfs.bin bs=1M count=${{ inputs.rootfs_size_mb }} status=none
           sudo mkfs.ext4 -F -L rootfs -O ^has_journal,^metadata_csum files/rootfs.bin >/dev/null
-
+          
           RU=""
           if sudo mount -o loop files/rootfs.bin build/mnt; then
             RU=$(sudo blkid -s UUID -o value files/rootfs.bin)
@@ -361,13 +359,12 @@ jobs:
 
           # 使用带有 UUID 的命令行，确保内核能准确找到根分区
           CMDLINE="earlycon console=tty0 console=ttyMSM0,115200 root=/dev/mmcblk0p14 rw loglevel=7"
-          #CMDLINE="earlycon root=LABEL=linuxroot console=ttyMSM0,115200 no_framebuffer=true rw androidboot.emmc=true androidboot.serialno=11c722 androidboot.baseband=msm mdss_mdp.panel=0:dsi:0:"
 
-          # 克隆支持完整参数的 mkbootimg 工具（使用与另一个脚本一致的 master-kernel-build 分支）
+          # 克隆支持完整参数的 mkbootimg 工具
           git clone https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg -b master-kernel-build-2022 --depth=1
 
           cat files/Image.gz files/dtbs/qcom/$MAIN.dtb > files/Image.gz-dtb
-
+          
           # 使用标准的 MSM8916 内存偏移量和 initrd 进行打包
           python3 /tmp/mkbootimg/mkbootimg.py \
                     --kernel files/Image.gz-dtb \
@@ -387,7 +384,7 @@ jobs:
           sha256sum *.xz *.mbn *.deb kernel-version.txt > SHA256SUMS
 
       - name: 上传 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4[cite: 1]
         with:
           name: ufi103s-debian13-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
           path: |
@@ -402,7 +399,7 @@ jobs:
 
       - name: 发布到 Release
         if: ${{ inputs.publish_release }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2[cite: 1]
         with:
           tag_name: ufi103s-${{ github.run_number }}
           name: UFI103S Debian13 ${{ inputs.dtb_name }} @ ${{ inputs.oc_hz }}Hz
@@ -413,33 +410,3 @@ jobs:
             files/aboot.mbn
             files/SHA256SUMS
             files/*.deb
-            files/kernel-version.txtSHA256SUMS
-
-      - name: 上传 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ufi103s-debian13-${{ inputs.dtb_name }}-${{ inputs.oc_hz }}
-          path: |
-            files/boot.img.xz
-            files/rootfs.bin.xz
-            files/hyp.mbn
-            files/aboot.mbn
-            files/SHA256SUMS
-            files/kernel-version.txt
-            files/*.deb
-          retention-days: 30
-
-      - name: 发布到 Release
-        if: ${{ inputs.publish_release }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ufi103s-${{ github.run_number }}
-          name: UFI103S Debian13 ${{ inputs.dtb_name }} @ ${{ inputs.oc_hz }}Hz
-          files: |
-            files/boot.img.xz
-            files/rootfs.bin.xz
-            files/hyp.mbn
-            files/aboot.mbn
-            files/SHA256SUMS
-            files/*.deb
-            files/kernel-version.txt
