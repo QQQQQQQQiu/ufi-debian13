@@ -55,25 +55,6 @@ jobs:
     timeout-minutes: 350        # 留 10 分钟余量，硬上限是 360
 
     steps:
-      # ------------------------------------------------------------------
-      # 1. 腾磁盘：runner 只有约 14GB SSD，预装工具链就占掉一大半
-      # ------------------------------------------------------------------
-      - name: 清理预装大件
-        run: |
-          df -h / /mnt || true
-          sudo rm -rf \
-            /opt/hostedtoolcache \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /opt/ghc \
-            /usr/local/share/powershell \
-            /usr/share/swift \
-            /usr/local/.ghcup \
-            /usr/lib/jvm 2>/dev/null || true
-          sudo apt-get clean
-          echo "=== 清理后 ==="
-          df -h /
-
       - name: 检出本套件
         uses: actions/checkout@v4
 
@@ -89,7 +70,7 @@ jobs:
                        -o Acquire::http::Timeout=60 \
                        -o Acquire::https::Timeout=60 \
                        install -y --no-install-recommends \
-            build-essential bc bison flex libssl-dev libncurses-dev \
+            build-essential bc bison flex libssl-dev libdw-dev libncurses-dev \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             gcc-arm-none-eabi binutils-arm-none-eabi \
