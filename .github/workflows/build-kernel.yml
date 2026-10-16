@@ -152,7 +152,7 @@ jobs:
       - name: 编译 bootchain
         run: |
           cd src
-          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KBUILD_DEBARGS="-d" bindeb-pkg
+          make -C qhypstub CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)"
           ls -lh qhypstub/*.elf 2>/dev/null || true
 
           # lk2nd 的 make 目标名在不同版本间会变。探针确认 target/ 下有 msm8916，
@@ -244,7 +244,7 @@ jobs:
           # 【新增】使用内核自带的 bindeb-pkg 目标编译 deb 包
           # 注意：交叉编译 deb 需要把 ARCH 和 CROSS_COMPILE 传给 debian 目标
           echo "=== 开始构建内核 .deb 升级包 ==="
-          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- bindeb-pkg
+          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KBUILD_DEBARGS="-d" bindeb-pkg
 
           # modules_install 维持原样给制作 rootfs 使用
           make -j"$(nproc)" modules_install \
