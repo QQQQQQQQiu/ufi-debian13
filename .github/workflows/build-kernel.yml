@@ -89,7 +89,7 @@ jobs:
             kmod cpio rsync xz-utils zstd device-tree-compiler u-boot-tools \
             debootstrap qemu-user-static binfmt-support \
             e2fsprogs dosfstools util-linux parted \
-            dwarves libelf-dev \
+            dwarves libelf-dev dpkg-dev \
             python3 git curl ca-certificates ccache
           sudo update-binfmts --enable qemu-aarch64 || true
 
@@ -168,6 +168,12 @@ jobs:
             exit 1
           fi
           
+          # 编译生成内核 Debian 包 (bindeb-pkg)
+          if ! make -j"$(nproc)" CC="ccache ${CROSS_COMPILE}gcc" bindeb-pkg > /tmp/deb.log 2>&1; then
+            tail -60 /tmp/deb.log
+            exit 1
+          fi
+
           # 安装模块到临时目录并生成 initrd 需要的内核版本目录
           make -j"$(nproc)" modules_install \
                INSTALL_MOD_PATH=../../build/modules \
@@ -202,6 +208,8 @@ jobs:
           fi
           echo "MAIN_DTB=$MAIN" >> $GITHUB_ENV
           tar -C ../../build/modules -czf ../../files/modules.tar.gz lib
+          # 收集生成的 deb 包到 files 目录
+          cp ../*.deb ../../files/ 2>/dev/null || true
           cd ../.. && rm -rf src/linux src/lk2nd src/qhypstub src/qtestsign
 
       - name: debootstrap Debian 13
@@ -378,7 +386,7 @@ jobs:
         run: |
           cd files
           xz -6 -T0 -f boot.img rootfs.bin
-          sha256sum *.xz *.mbn kernel-version.txt > SHA256SUMS
+          sha256sum *.xz *.mbn *.deb kernel-version.txt > SHA256SUMS
 
       - name: 上传 artifact
         uses: actions/upload-artifact@v4
@@ -391,6 +399,7 @@ jobs:
             files/aboot.mbn
             files/SHA256SUMS
             files/kernel-version.txt
+            files/*.deb
           retention-days: 30
 
       - name: 发布到 Release
@@ -405,3 +414,5 @@ jobs:
             files/hyp.mbn
             files/aboot.mbn
             files/SHA256SUMS
+            files/*.deb
+            files/kernel-version.txt
