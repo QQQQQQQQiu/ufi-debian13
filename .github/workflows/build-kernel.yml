@@ -98,7 +98,7 @@ jobs:
             kmod cpio rsync xz-utils zstd device-tree-compiler u-boot-tools \
             debootstrap qemu-user-static binfmt-support \
             e2fsprogs dosfstools util-linux parted \
-            dwarves libelf-dev \
+            dwarves libelf-dev libdw-dev \
             python3 git curl ca-certificates ccache dpkg-dev debhelper
           sudo update-binfmts --enable qemu-aarch64 || true
           echo "=== qemu binfmt ==="
@@ -152,7 +152,7 @@ jobs:
       - name: 编译 bootchain
         run: |
           cd src
-          make -C qhypstub CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)"
+          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KBUILD_DEBARGS="-d" bindeb-pkg
           ls -lh qhypstub/*.elf 2>/dev/null || true
 
           # lk2nd 的 make 目标名在不同版本间会变。探针确认 target/ 下有 msm8916，
