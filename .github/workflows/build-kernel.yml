@@ -77,7 +77,7 @@ jobs:
             kmod cpio rsync xz-utils zstd device-tree-compiler u-boot-tools \
             debootstrap qemu-user-static binfmt-support \
             e2fsprogs dosfstools util-linux parted \
-            dwarves libelf-dev dpkg-dev debhelper \
+            dwarves libelf-dev dpkg-dev debhelper devscripts fakeroot \
             python3 git curl ca-certificates ccache
           sudo update-binfmts --enable qemu-aarch64 || true
 
