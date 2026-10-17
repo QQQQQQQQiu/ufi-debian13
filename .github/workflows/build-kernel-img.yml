@@ -18,7 +18,7 @@ on:
       boot_cmdline:
         description: 'boot.img cmdline (写入 boot header，上限 512 字节)'
         required: true
-        default: 'earlycon root=LABEL=linuxroot console=ttyMSM0,115200 no_framebuffer=true rw androidboot.emmc=true androidboot.serialno=11c722 androidboot.baseband=msm mdss_mdp.panel=0:dsi:0:'
+        default: 'earlycon root=/dev/mmcblk0p14 console=ttyMSM0,115200 no_framebuffer=true rw androidboot.emmc=true androidboot.serialno=11c722 androidboot.baseband=msm mdss_mdp.panel=0:dsi:0:'
 
 env:
   DEBIAN_FRONTEND: noninteractive
