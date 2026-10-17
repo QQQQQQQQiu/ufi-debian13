@@ -11,11 +11,6 @@ on:
           - msm8916-thwc-uf896
           - msm8916-yiming-uz801v3
           - msm8916-fy-mf800
-      pack_all_dtbs:
-        description: 'true=把所有 msm8916-*.dtb 都打进 qcdt（board-id 精确匹配，兼容多型号）；false=只打选中的那一个'
-        required: false
-        default: false
-        type: boolean
       kernel_ref:
         description: '内核分支/tag。留空=用仓库默认分支(最稳)'
         required: false
@@ -35,6 +30,10 @@ env:
   BOOT_RAMDISK_OFFSET: '0x02000000'
   BOOT_TAGS_OFFSET: '0x01e00000'
   BOOT_PAGESIZE: '2048'
+  # 原厂 aboot 的 qcdt 匹配属性。MSM8916=206；board-id 通用值 <0 0>，
+  # 若设备原厂 aboot 严格匹配 board-id 导致起不来，改成原厂 boot.img 里的值。
+  QCOM_MSM_ID: '206 0'
+  QCOM_BOARD_ID: '0 0'
 
 jobs:
   build:
@@ -59,15 +58,14 @@ jobs:
             binutils-aarch64-linux-gnu \
             kmod cpio rsync xz-utils zstd device-tree-compiler \
             dwarves libelf-dev python3 git curl ca-certificates ccache
-            
+
       - name: 编译 dtbTool (LineageOS cm-14.1 分支)
         run: |
           set -e
-          sudo apt-get install -y gcc g++
           git clone https://github.com/rajatgupta1998/android_tools_system_dtbTool/ /tmp/dtbToolX
           gcc /tmp/dtbToolX/source/dtbtool.c -o /tmp/dtbTool
-          /tmp/dtbTool -h 2>&1 | head -5 || true       
-          
+          /tmp/dtbTool -h 2>&1 | head -5 || true
+
       - name: 恢复 ccache
         uses: actions/cache@v4
         with:
@@ -91,6 +89,33 @@ jobs:
           echo "=== 内核树里的 UFI/同类 DTB ==="
           ls linux/arch/arm64/boot/dts/qcom/ | grep -E "msm8916.*(thwc|uz801|ufi|mf800|jz)" || true
 
+      # ==================================================================
+      # 关键新增：mainline 的 msm8916 DTS 早已移除 qcom,msm-id / qcom,board-id，
+      # 但原厂 aboot 的 qcdt 匹配依赖它们。dtbTool 扫不到
+      # `qcom,msm-id = <` 就会输出 "Found 0 unique DTB(s)" 然后退出，
+      # 导致 dtb.img 根本没生成。这里直接给目标 DTS 追加根节点属性。
+      # ==================================================================
+      - name: 为 DTB 补充 qcom,msm-id / qcom,board-id
+        run: |
+          set -e
+          DTS_PATH="src/linux/arch/arm64/boot/dts/qcom/${{ inputs.dtb_name }}.dts"
+          echo "目标 DTS: $DTS_PATH"
+
+          if [ ! -f "$DTS_PATH" ]; then
+            echo "!! DTS 不存在。当前内核树里可用的 msm8916 DTS："
+            ls src/linux/arch/arm64/boot/dts/qcom/msm8916-*.dts 2>/dev/null | head -30
+            exit 1
+          fi
+
+          if grep -q "qcom,msm-id" "$DTS_PATH"; then
+            echo "DTS 已含 qcom,msm-id，跳过追加"
+          else
+            printf '\n/ {\n    qcom,msm-id = <%s>;\n    qcom,board-id = <%s>;\n};\n' \
+              "${{ env.QCOM_MSM_ID }}" "${{ env.QCOM_BOARD_ID }}" >> "$DTS_PATH"
+            echo "=== 追加后 DTS 尾部 ==="
+            tail -8 "$DTS_PATH"
+          fi
+
       - name: 编译 Image.gz 与 DTB
         run: |
           cd src/linux
@@ -112,6 +137,18 @@ jobs:
           ls -lh arch/arm64/boot/Image.gz
           echo "=== 生成的 msm8916 DTB 数量: $(ls arch/arm64/boot/dts/qcom/msm8916-*.dtb 2>/dev/null | wc -l) ==="
 
+          # 验证目标 DTB 里真的带上了 msm-id / board-id
+          MAIN="${{ inputs.dtb_name }}"
+          TGT="arch/arm64/boot/dts/qcom/$MAIN.dtb"
+          if [ ! -f "$TGT" ]; then
+            echo "!! 目标 DTB 未生成: $TGT"
+            exit 1
+          fi
+          echo "=== 验证 $MAIN.dtb 的 qcdt 匹配属性 ==="
+          dtc -I dtb -O dts "$TGT" 2>/dev/null \
+            | grep -E "qcom,(msm-id|board-id)" \
+            || { echo "!! DTB 中没找到 msm-id/board-id，dtbTool 会再次失败"; exit 1; }
+
       - name: 组装 Android boot.img
         run: |
           set -e
@@ -120,42 +157,33 @@ jobs:
           echo "KVER=$KVER" >> "$GITHUB_ENV"
           echo "内核版本: $KVER"
 
-          
           MAIN="${{ inputs.dtb_name }}"
           DTS_DIR=arch/arm64/boot/dts/qcom
           echo "DTB: $MAIN"
 
-          # ---------------- 工具准备 ----------------
           echo "=== 安装 mkbootimg ==="
           git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
-          
-          DTBTOOL_OK=1
 
-          # ---------------- 收集产物 ----------------
           rm -rf /tmp/boot && mkdir -p /tmp/boot/dtbs
           cp arch/arm64/boot/Image.gz /tmp/boot/
-          
           cp "$DTS_DIR/$MAIN.dtb" /tmp/boot/dtbs/
-
-          if [ "${{ inputs.pack_all_dtbs }}" = "true" ]; then
-            for f in "$DTS_DIR"/msm8916-*.dtb; do
-              b=$(basename "$f")
-              [ -f "/tmp/boot/dtbs/$b" ] || cp "$f" /tmp/boot/dtbs/
-            done
-            echo "=== 打包模式: 全量（含主 DTB 共 $(ls /tmp/boot/dtbs/*.dtb | wc -l) 个）==="
-          else
-            echo "=== 打包模式: 仅主 DTB ==="
-          fi
-          ls /tmp/boot/dtbs/ | head -50
-
-          # 备一份主 DTB 单文件方便事后排查/单独替换
           cp "/tmp/boot/dtbs/$MAIN.dtb" /tmp/boot/selected.dtb
 
-          # ---------------- 生成 dtb.img ----------------
-          DTB_ARGS=("/tmp/boot/dtbs")
-          
-          /tmp/dtbTool -o /tmp/boot/dtb.img -s 2048 "${DTB_ARGS[@]}"
-          echo "=== dtb.img 已生成 ==="
+          echo "=== DTB 文件 ==="
+          ls -lh /tmp/boot/dtbs/
+
+          # ---------------- 生成 dtb.img (qcdt) ----------------
+          echo "=== 生成 dtb.img (qcdt) ==="
+          if ! /tmp/dtbTool -o /tmp/boot/dtb.img -s 2048 /tmp/boot/dtbs/; then
+            echo "!! dtbTool 执行失败"
+            echo "!! 排查：目标 DTB 的 msm-id/board-id"
+            dtc -I dtb -O dts /tmp/boot/dtbs/$MAIN.dtb 2>/dev/null | grep -E "qcom,(msm-id|board-id)" || true
+            exit 1
+          fi
+          if [ ! -f /tmp/boot/dtb.img ]; then
+            echo "!! dtbTool 未生成 dtb.img（Found 0 unique DTB(s) 说明 msm-id 仍缺失/格式不对）"
+            exit 1
+          fi
           ls -lh /tmp/boot/dtb.img
 
           # ---------------- 最小空 ramdisk ----------------
@@ -197,7 +225,6 @@ jobs:
           {
             echo "$KVER"
             echo "main_dtb: $MAIN"
-            echo "pack_all_dtbs: ${{ inputs.pack_all_dtbs }}"
             echo "dtb_count: $(ls /tmp/boot/dtbs/*.dtb | wc -l)"
           } > ../../files/kernel-version.txt
 
