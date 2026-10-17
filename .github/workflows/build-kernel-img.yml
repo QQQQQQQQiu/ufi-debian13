@@ -1,13 +1,28 @@
-name: build-bootimg
+name: build-android-bootimg
 on:
   workflow_dispatch:
     inputs:
+      dtb_name:
+        description: '主 DTB（放 qcdt 首位，作 board-id 未命中时的 fallback）'
+        required: true
+        default: 'msm8916-yiming-uz801v3'
+        type: choice
+        options:
+          - msm8916-thwc-ufi001c
+          - msm8916-thwc-uf896
+          - msm8916-yiming-uz801v3
+          - msm8916-fy-mf800
+      pack_all_dtbs:
+        description: 'true=把所有 msm8916-*.dtb 都打进 qcdt（board-id 精确匹配，兼容多型号）；false=只打选中的那一个'
+        required: false
+        default: false
+        type: boolean
       kernel_ref:
         description: '内核分支/tag。留空=用仓库默认分支(最稳)'
         required: false
         default: ''
       boot_cmdline:
-        description: 'boot.img cmdline (写入 boot header)'
+        description: 'boot.img cmdline (写入 boot header，上限 512 字节)'
         required: true
         default: 'earlycon root=LABEL=linuxroot console=ttyMSM0,115200 no_framebuffer=true rw androidboot.emmc=true androidboot.serialno=11c722 androidboot.baseband=msm mdss_mdp.panel=0:dsi:0:'
 
@@ -15,7 +30,7 @@ env:
   DEBIAN_FRONTEND: noninteractive
   ARCH: arm64
   CROSS_COMPILE: aarch64-linux-gnu-
-  # msm8916 平台内存布局（与 Android 原厂 boardconfig 一致）
+  # msm8916 平台 boot header 内存布局
   BOOT_BASE: '0x80000000'
   BOOT_KERNEL_OFFSET: '0x00008000'
   BOOT_RAMDISK_OFFSET: '0x02000000'
@@ -66,6 +81,8 @@ jobs:
           echo "=== 实际检出的分支/版本 ==="
           git -C linux branch --show-current
           echo "内核版本: $(git -C linux describe --tags 2>/dev/null || git -C linux rev-parse --short HEAD)"
+          echo "=== 内核树里的 UFI/同类 DTB ==="
+          ls linux/arch/arm64/boot/dts/qcom/ | grep -E "msm8916.*(thwc|uz801|ufi|mf800|jz)" || true
 
       - name: 编译 Image.gz 与 DTB
         run: |
@@ -86,7 +103,7 @@ jobs:
 
           echo "----- 产物 -----"
           ls -lh arch/arm64/boot/Image.gz
-          ls arch/arm64/boot/dts/qcom/ | grep -i msm8916 | head -30
+          echo "=== 生成的 msm8916 DTB 数量: $(ls arch/arm64/boot/dts/qcom/msm8916-*.dtb 2>/dev/null | wc -l) ==="
 
       - name: 组装 Android boot.img
         run: |
@@ -96,11 +113,30 @@ jobs:
           echo "KVER=$KVER" >> "$GITHUB_ENV"
           echo "内核版本: $KVER"
 
+          # ---------------- 决定主 DTB ----------------
+          # 用户请求的 DTB 不存在时，按 build.yml 里同样的思路降级：
+          # 先按优先级列表里挑第一个存在的，再退到 ls 第一个，别让构建白跑。
+          MAIN="${{ inputs.dtb_name }}"
+          DTS_DIR=arch/arm64/boot/dts/qcom
+          if [ ! -f "$DTS_DIR/$MAIN.dtb" ]; then
+            echo "!! 请求的主 DTB $MAIN 不在内核树里，自动降级"
+            for cand in msm8916-thwc-ufi001c msm8916-thwc-uf896 \
+                        msm8916-yiming-uz801v3 msm8916-fy-mf800; do
+              if [ -f "$DTS_DIR/$cand.dtb" ]; then MAIN="$cand"; break; fi
+            done
+            if [ ! -f "$DTS_DIR/$MAIN.dtb" ]; then
+              MAIN=$(ls "$DTS_DIR"/msm8916-*.dtb | head -1 | xargs basename | sed 's/\.dtb$//')
+            fi
+            echo "!! 改用: $MAIN"
+          fi
+          echo "MAIN_DTB=$MAIN" >> $GITHUB_ENV
+          echo "主 DTB: $MAIN"
+
           # ---------------- 工具准备 ----------------
           echo "=== 安装 mkbootimg ==="
           git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
 
-          echo "=== 编译 dtbTool (msm8916-mainline fork, 用于生成 qcdt) ==="
+          echo "=== 编译 dtbTool (msm8916-mainline fork，生成 qcdt) ==="
           DTBTOOL_OK=0
           if git clone --depth 1 https://github.com/msm8916-mainline/dtbTool /tmp/dtbTool-src; then
             if g++ -O2 -std=c++11 -o /tmp/dtbTool /tmp/dtbTool-src/dtbTool.cpp; then
@@ -116,22 +152,41 @@ jobs:
           # ---------------- 收集产物 ----------------
           rm -rf /tmp/boot && mkdir -p /tmp/boot/dtbs
           cp arch/arm64/boot/Image.gz /tmp/boot/
-          cp arch/arm64/boot/dts/qcom/msm8916*.dtb /tmp/boot/dtbs/ || true
-          echo "=== 收集到的 msm8916 DTB 数量: $(ls /tmp/boot/dtbs/*.dtb 2>/dev/null | wc -l) ==="
+
+          # 主 DTB 先落盘（会作为 dtbTool 第一个参数 = board-id 未命中时的 fallback）
+          cp "$DTS_DIR/$MAIN.dtb" /tmp/boot/dtbs/
+
+          if [ "${{ inputs.pack_all_dtbs }}" = "true" ]; then
+            for f in "$DTS_DIR"/msm8916-*.dtb; do
+              b=$(basename "$f")
+              [ -f "/tmp/boot/dtbs/$b" ] || cp "$f" /tmp/boot/dtbs/
+            done
+            echo "=== 打包模式: 全量（含主 DTB 共 $(ls /tmp/boot/dtbs/*.dtb | wc -l) 个）==="
+          else
+            echo "=== 打包模式: 仅主 DTB ==="
+          fi
           ls /tmp/boot/dtbs/ | head -50
+
+          # 备一份主 DTB 单文件方便事后排查/单独替换
+          cp "/tmp/boot/dtbs/$MAIN.dtb" /tmp/boot/selected.dtb
 
           # ---------------- 生成 dtb.img (qcdt) ----------------
           if [ "$DTBTOOL_OK" = "1" ]; then
-            /tmp/dtbTool -o /tmp/boot/dtb.img -s 2048 /tmp/boot/dtbs/*.dtb
+            # 主 DTB 排第一位，其余按字典序补在后面
+            DTB_ARGS=("/tmp/boot/dtbs/$MAIN.dtb")
+            for f in /tmp/boot/dtbs/*.dtb; do
+              [ "$f" = "/tmp/boot/dtbs/$MAIN.dtb" ] && continue
+              DTB_ARGS+=("$f")
+            done
+            /tmp/dtbTool -o /tmp/boot/dtb.img -s 2048 "${DTB_ARGS[@]}"
             echo "=== dtb.img (qcdt) 已生成 ==="
           else
-            echo "!! 未编译出 dtbTool，退化为直接拼接（可能无法启动，仅供排查）"
+            echo "!! 未编译出 dtbTool，退化为直接拼接（aboot 极可能不认，仅供排查）"
             cat /tmp/boot/dtbs/*.dtb > /tmp/boot/dtb.img
           fi
           ls -lh /tmp/boot/dtb.img
 
           # ---------------- 最小空 ramdisk ----------------
-          # 空 cpio.gz：内核会忽略它并继续 root=LABEL=；某些 bootloader 也要求 ramdisk 字段非空
           mkdir -p /tmp/boot/ramdisk
           ( cd /tmp/boot/ramdisk && find . | cpio -o -H newc 2>/dev/null | gzip -9 > /tmp/boot/ramdisk.cpio.gz )
           ls -lh /tmp/boot/ramdisk.cpio.gz
@@ -165,24 +220,31 @@ jobs:
           cp /tmp/boot/boot.img           ../../files/
           cp /tmp/boot/Image.gz           ../../files/
           cp /tmp/boot/dtb.img            ../../files/
+          cp /tmp/boot/selected.dtb       "../../files/selected-$MAIN.dtb"
           cp /tmp/boot/ramdisk.cpio.gz    ../../files/
-          echo "$KVER" > ../../files/kernel-version.txt
+          {
+            echo "$KVER"
+            echo "main_dtb: $MAIN"
+            echo "pack_all_dtbs: ${{ inputs.pack_all_dtbs }}"
+            echo "dtb_count: $(ls /tmp/boot/dtbs/*.dtb | wc -l)"
+          } > ../../files/kernel-version.txt
 
       - name: 生成 SHA256SUMS
         run: |
           cd files
-          sha256sum boot.img Image.gz dtb.img ramdisk.cpio.gz kernel-version.txt > SHA256SUMS
+          sha256sum boot.img Image.gz dtb.img selected-*.dtb ramdisk.cpio.gz kernel-version.txt > SHA256SUMS
           echo "=== 最终产物 ==="
           ls -lh
 
       - name: 上传 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: boot-img
+          name: boot-img-${{ inputs.dtb_name }}
           path: |
             files/boot.img
             files/Image.gz
             files/dtb.img
+            files/selected-*.dtb
             files/ramdisk.cpio.gz
             files/kernel-version.txt
             files/SHA256SUMS
