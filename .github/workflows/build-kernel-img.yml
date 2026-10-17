@@ -60,13 +60,18 @@ jobs:
             binutils-aarch64-linux-gnu \
             kmod cpio rsync xz-utils zstd device-tree-compiler \
             dwarves libelf-dev python3 git curl ca-certificates ccache
-      - name: 编译 dtbTool (LineageOS 源)      
+            
+      - name: 编译 dtbTool (LineageOS cm-14.1 分支)
         run: |
           set -e
           sudo apt-get install -y gcc g++
-          git clone --depth 1 https://github.com/LineageOS/android_device_qcom_common /tmp/qcom-common
+          git clone -b cm-14.1 --depth 1 \
+            https://github.com/LineageOS/android_device_qcom_common.git /tmp/qcom-common
+          # 确认文件存在
+          ls /tmp/qcom-common/dtbtool/
           gcc -O2 -o /tmp/dtbTool /tmp/qcom-common/dtbtool/dtbtool.c
-          /tmp/dtbTool -h 2>&1 | head -5 || true      
+          /tmp/dtbTool -h 2>&1 | head -5 || true       
+          
       - name: 恢复 ccache
         uses: actions/cache@v4
         with:
