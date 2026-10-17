@@ -65,8 +65,8 @@ jobs:
         run: |
           set -e
           sudo apt-get install -y gcc g++
-          git clone https://github.com/rajatgupta1998/android_tools_system_dtbTool/ /tmp/dtbTool
-          gcc /tmp/dtbTool/source/dtbtool.c -o /tmp/dtbTool/dtbtool.c
+          git clone https://github.com/rajatgupta1998/android_tools_system_dtbTool/ /tmp/dtbToolX
+          gcc /tmp/dtbToolX/source/dtbtool.c -o /tmp/dtbTool
           /tmp/dtbTool -h 2>&1 | head -5 || true       
           
       - name: 恢复 ccache
