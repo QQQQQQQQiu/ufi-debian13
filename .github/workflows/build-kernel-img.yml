@@ -1,4 +1,4 @@
-name: build-android-bootimg
+name: build-bootimg
 on:
   workflow_dispatch:
     inputs:
@@ -151,11 +151,8 @@ jobs:
           cp "/tmp/boot/dtbs/$MAIN.dtb" /tmp/boot/selected.dtb
 
           # ---------------- 生成 dtb.img ----------------
-          DTB_ARGS=("/tmp/boot/dtbs/$MAIN.dtb")
-          for f in /tmp/boot/dtbs/*.dtb; do
-            [ "$f" = "/tmp/boot/dtbs/$MAIN.dtb" ] && continue
-            DTB_ARGS+=("$f")
-          done  
+          DTB_ARGS=("/tmp/boot/dtbs")
+          
           /tmp/dtbTool -o /tmp/boot/dtb.img -s 2048 "${DTB_ARGS[@]}"
           echo "=== dtb.img 已生成 ==="
           ls -lh /tmp/boot/dtb.img
