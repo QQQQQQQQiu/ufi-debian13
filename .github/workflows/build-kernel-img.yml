@@ -198,7 +198,8 @@ jobs:
           exec /bin/busybox switch_root /newroot /sbin/init
           EOF
           chmod +x "$INITRD_ROOT/init"
-
+          
+          rm -rf /tmp/boot && mkdir -p /tmp/boot/dtbs
           # 4. 打包成 cpio.gz（或 xz 以减小体积）
           ( cd "$INITRD_ROOT" && find . | cpio -o -H newc | gzip -9 > /tmp/boot/ramdisk.cpio.gz )
           ls -lh /tmp/boot/ramdisk.cpio.gz
@@ -218,7 +219,7 @@ jobs:
           echo "=== 安装 mkbootimg ==="
           git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
 
-          rm -rf /tmp/boot && mkdir -p /tmp/boot/dtbs
+          
           cp arch/arm64/boot/Image.gz /tmp/boot/
           cp "$DTS_DIR/$MAIN.dtb" /tmp/boot/dtbs/
           cp "/tmp/boot/dtbs/$MAIN.dtb" /tmp/boot/selected.dtb
