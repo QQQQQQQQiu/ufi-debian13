@@ -27,7 +27,9 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+ #   runs-on: ubuntu-latest
+ #   container: debian:trixie
     timeout-minutes: 350
 
     steps:
@@ -49,6 +51,7 @@ jobs:
             kmod cpio rsync xz-utils zstd device-tree-compiler \
             dwarves libelf-dev python3 git curl ca-certificates ccache
           sudo apt-get install -y mkbootimg
+          
            # 修复 mkbootimg 缺失 gki 模块的问题
           # 不同发行版/版本路径可能略有差异，这里同时尝试两个常见位置
           GKI_PATH=""
