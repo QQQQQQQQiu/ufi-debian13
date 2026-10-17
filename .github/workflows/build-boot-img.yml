@@ -49,6 +49,22 @@ jobs:
             kmod cpio rsync xz-utils zstd device-tree-compiler \
             dwarves libelf-dev python3 git curl ca-certificates ccache
           sudo apt-get install -y mkbootimg
+           # 修复 mkbootimg 缺失 gki 模块的问题
+          # 不同发行版/版本路径可能略有差异，这里同时尝试两个常见位置
+          GKI_PATH=""
+          for p in /usr/share/android-tools/mkbootimg /usr/lib/android-tools; do
+            if [ -d "$p/gki" ]; then
+              GKI_PATH="$p"
+              break
+            fi
+          done
+          
+          if [ -n "$GKI_PATH" ]; then
+            echo "找到 gki 模块路径: $GKI_PATH"
+            export PYTHONPATH="$GKI_PATH:$PYTHONPATH"
+          else
+            echo "未在预期路径找到 gki 模块，尝试直接运行 mkbootimg（如果仍失败，请考虑方案 B）"
+          fi
           
       - name: 恢复 ccache
         uses: actions/cache@v4
@@ -139,17 +155,8 @@ jobs:
           sudo mkinitramfs -c gzip -k "$KERNEL_VERSION" -o "${{ github.workspace }}/initrd.img"
           ls -lh "${{ github.workspace }}/initrd.img"
 
-      - name: 安装 abootimg 并打包 boot.img
+      - name: 打包 boot.img (mkbootimg + gki 修复)
         run: |
-
-          # MSM8916 标准地址布局（与你 cmdline 中的 root= 配合使用）
-          # base = 0x80000000
-          # kernel_offset = 0x00080000  -> kerneladdr = 0x80080000
-          # ramdisk_offset = 0x02000000 -> ramdiskaddr = 0x82000000
-          # second_offset = 0x00f00000  -> secondaddr  = 0x80f00000
-          # tags_offset = 0x01e00000    -> tagsaddr    = 0x81e00000
-          # pagesize = 2048 (0x800)
-          
           mkbootimg \
             --base 0x80000000 \
             --kernel_offset 0x00080000 \
@@ -158,13 +165,12 @@ jobs:
             --pagesize 2048 \
             --second_offset 0x00f00000 \
             --ramdisk initrd.img \
-            --cmdline "${{ inputs.boot_cmdline }}"\
-            --kernel src/linux/arch/arm64/boot/Image.gz-dtb -o boot.img
+            --cmdline "${{ inputs.boot_cmdline }}" \
+            --kernel src/linux/arch/arm64/boot/Image.gz-dtb \
+            -o boot.img
 
           ls -lh boot.img
-          # 快速检查 boot.img 头部信息
-          abootimg -i boot.img || true
-
+          
       - name: 上传 boot.img 工件
         uses: actions/upload-artifact@v4
         with:
