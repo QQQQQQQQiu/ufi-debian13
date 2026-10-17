@@ -3,7 +3,6 @@ on:
   workflow_dispatch:
     inputs:
       dtb_name:
-        description: '主 DTB（放 qcdt 首位，作 board-id 未命中时的 fallback）'
         required: true
         default: 'msm8916-yiming-uz801v3'
         type: choice
@@ -121,24 +120,9 @@ jobs:
           echo "KVER=$KVER" >> "$GITHUB_ENV"
           echo "内核版本: $KVER"
 
-          # ---------------- 决定主 DTB ----------------
-          # 用户请求的 DTB 不存在时，按 build.yml 里同样的思路降级：
-          # 先按优先级列表里挑第一个存在的，再退到 ls 第一个，别让构建白跑。
+          
           MAIN="${{ inputs.dtb_name }}"
-          DTS_DIR=arch/arm64/boot/dts/qcom
-          if [ ! -f "$DTS_DIR/$MAIN.dtb" ]; then
-            echo "!! 请求的主 DTB $MAIN 不在内核树里，自动降级"
-            for cand in msm8916-thwc-ufi001c msm8916-thwc-uf896 \
-                        msm8916-yiming-uz801v3 msm8916-fy-mf800; do
-              if [ -f "$DTS_DIR/$cand.dtb" ]; then MAIN="$cand"; break; fi
-            done
-            if [ ! -f "$DTS_DIR/$MAIN.dtb" ]; then
-              MAIN=$(ls "$DTS_DIR"/msm8916-*.dtb | head -1 | xargs basename | sed 's/\.dtb$//')
-            fi
-            echo "!! 改用: $MAIN"
-          fi
-          echo "MAIN_DTB=$MAIN" >> $GITHUB_ENV
-          echo "主 DTB: $MAIN"
+          echo "DTB: $MAIN"
 
           # ---------------- 工具准备 ----------------
           echo "=== 安装 mkbootimg ==="
@@ -149,8 +133,7 @@ jobs:
           # ---------------- 收集产物 ----------------
           rm -rf /tmp/boot && mkdir -p /tmp/boot/dtbs
           cp arch/arm64/boot/Image.gz /tmp/boot/
-
-          # 主 DTB 先落盘（会作为 dtbTool 第一个参数 = board-id 未命中时的 fallback）
+          
           cp "$DTS_DIR/$MAIN.dtb" /tmp/boot/dtbs/
 
           if [ "${{ inputs.pack_all_dtbs }}" = "true" ]; then
@@ -167,20 +150,14 @@ jobs:
           # 备一份主 DTB 单文件方便事后排查/单独替换
           cp "/tmp/boot/dtbs/$MAIN.dtb" /tmp/boot/selected.dtb
 
-          # ---------------- 生成 dtb.img (qcdt) ----------------
-          if [ "$DTBTOOL_OK" = "1" ]; then
-            # 主 DTB 排第一位，其余按字典序补在后面
-            DTB_ARGS=("/tmp/boot/dtbs/$MAIN.dtb")
-            for f in /tmp/boot/dtbs/*.dtb; do
-              [ "$f" = "/tmp/boot/dtbs/$MAIN.dtb" ] && continue
-              DTB_ARGS+=("$f")
-            done
-            /tmp/dtbTool -o /tmp/boot/dtb.img -s 2048 "${DTB_ARGS[@]}"
-            echo "=== dtb.img (qcdt) 已生成 ==="
-          else
-            echo "!! 未编译出 dtbTool，退化为直接拼接（aboot 极可能不认，仅供排查）"
-            cat /tmp/boot/dtbs/*.dtb > /tmp/boot/dtb.img
-          fi
+          # ---------------- 生成 dtb.img ----------------
+          DTB_ARGS=("/tmp/boot/dtbs/$MAIN.dtb")
+          for f in /tmp/boot/dtbs/*.dtb; do
+            [ "$f" = "/tmp/boot/dtbs/$MAIN.dtb" ] && continue
+            DTB_ARGS+=("$f")
+          done  
+          /tmp/dtbTool -o /tmp/boot/dtb.img -s 2048 "${DTB_ARGS[@]}"
+          echo "=== dtb.img 已生成 ==="
           ls -lh /tmp/boot/dtb.img
 
           # ---------------- 最小空 ramdisk ----------------
