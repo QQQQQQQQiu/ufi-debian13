@@ -48,7 +48,8 @@ jobs:
             binutils-aarch64-linux-gnu \
             kmod cpio rsync xz-utils zstd device-tree-compiler \
             dwarves libelf-dev python3 git curl ca-certificates ccache
-
+          sudo apt-get install -y abootimg
+          
       - name: 恢复 ccache
         uses: actions/cache@v4
         with:
@@ -122,30 +123,24 @@ jobs:
 
       - name: 构建 Debian initramfs
         run: |
-          # 安装 initramfs-tools
           sudo apt-get install -y initramfs-tools
 
-          # 将交叉编译的模块放到 mkinitramfs 能找到的路径
           sudo mkdir -p "/lib/modules/$KERNEL_VERSION"
           sudo cp -a "${{ github.workspace }}/modules_out/lib/modules/$KERNEL_VERSION/." "/lib/modules/$KERNEL_VERSION/"
           sudo depmod -a "$KERNEL_VERSION"
 
-          # 确保 initramfs 包含挂载 eMMC/ext4 根分区必需的模块
-          # 如果你的内核把 sdhci/mmc/ext4 编译进了内核（=y），这些行不是必须的，但保留无害
           for m in sdhci_msm mmc_block ext4; do
             echo "$m" | sudo tee -a /etc/initramfs-tools/modules
           done
 
-          # 使用 MODULES=most 生成“完整” initramfs，包含大部分可用模块，便于调试和恢复
           echo 'MODULES=most' | sudo tee /etc/initramfs-tools/initramfs.conf
 
-          sudo mkinitramfs -k "$KERNEL_VERSION" -o "${{ github.workspace }}/initrd.img"
+          # 关键修改：用 -c gzip 显式指定压缩格式，避免 COMPRESS 未设置错误
+          sudo mkinitramfs -c gzip -k "$KERNEL_VERSION" -o "${{ github.workspace }}/initrd.img"
           ls -lh "${{ github.workspace }}/initrd.img"
-          file "${{ github.workspace }}/initrd.img"
 
       - name: 安装 abootimg 并打包 boot.img
         run: |
-          sudo apt-get install -y abootimg
 
           # MSM8916 标准地址布局（与你 cmdline 中的 root= 配合使用）
           # base = 0x80000000
