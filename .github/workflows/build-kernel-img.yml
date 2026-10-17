@@ -59,8 +59,7 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             kmod cpio rsync xz-utils zstd device-tree-compiler \
-            dwarves libelf-dev python3 git curl ca-certificates ccache
-
+            dwarves libelf-dev python3 git curl ca-certificates ccache skales
       - name: 恢复 ccache
         uses: actions/cache@v4
         with:
@@ -135,19 +134,8 @@ jobs:
           # ---------------- 工具准备 ----------------
           echo "=== 安装 mkbootimg ==="
           git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
-
-          echo "=== 编译 dtbTool (msm8916-mainline fork，生成 qcdt) ==="
-          DTBTOOL_OK=0
-          if git clone --depth 1 https://github.com/msm8916-mainline/dtbTool /tmp/dtbTool-src; then
-            if g++ -O2 -std=c++11 -o /tmp/dtbTool /tmp/dtbTool-src/dtbTool.cpp; then
-              DTBTOOL_OK=1
-              echo "dtbTool 编译成功"
-            else
-              echo "!! dtbTool 编译失败"
-            fi
-          else
-            echo "!! dtbTool 源码拉取失败"
-          fi
+          
+          DTBTOOL_OK=1
 
           # ---------------- 收集产物 ----------------
           rm -rf /tmp/boot && mkdir -p /tmp/boot/dtbs
@@ -178,7 +166,7 @@ jobs:
               [ "$f" = "/tmp/boot/dtbs/$MAIN.dtb" ] && continue
               DTB_ARGS+=("$f")
             done
-            /tmp/dtbTool -o /tmp/boot/dtb.img -s 2048 "${DTB_ARGS[@]}"
+            dtbTool -o /tmp/boot/dtb.img -s 2048 "${DTB_ARGS[@]}"
             echo "=== dtb.img (qcdt) 已生成 ==="
           else
             echo "!! 未编译出 dtbTool，退化为直接拼接（aboot 极可能不认，仅供排查）"
