@@ -72,7 +72,7 @@ jobs:
           echo "=== 内核树里的 UFI/同类 DTB ==="
           ls linux/arch/arm64/boot/dts/qcom/ | grep -E "msm8916.*(thwc|uz801|ufi|mf800|jz)" || true
 
-      - name: config 与 DTB
+      - name: 内核config
         run: |
           cd src/linux
           export PATH="/usr/lib/ccache:$PATH"
@@ -84,9 +84,6 @@ jobs:
           ls -la ../../kernel-fragments/
           cp ../../kernel-fragments/kcfg .config
           make olddefconfig
-          
-          MAIN="${{ inputs.dtb_name }}"
-          ls -lh arch/arm64/boot/dts/qcom/${{ inputs.dtb_name }}.dtb
           
       - name: 编译内核与 DTB
         run: |
