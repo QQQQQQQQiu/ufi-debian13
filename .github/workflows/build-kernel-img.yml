@@ -122,6 +122,7 @@ jobs:
 
           
           MAIN="${{ inputs.dtb_name }}"
+          DTS_DIR=arch/arm64/boot/dts/qcom
           echo "DTB: $MAIN"
 
           # ---------------- 工具准备 ----------------
