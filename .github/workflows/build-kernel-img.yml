@@ -64,9 +64,9 @@ jobs:
       - name: 编译 dtbTool (LineageOS cm-14.1 分支)
         run: |
           set -e
-          sudo apt-get install -y libc++-helpers gcc-6-base libc6 libgcc1 multiarch-support libc++1 libc++-test libc++abi1 libc++abi-test libc++abi-dev libc++-dev
+          sudo apt-get install -y gcc g++
           git clone https://github.com/rajatgupta1998/android_tools_system_dtbTool/ /tmp/dtbTool
-          gcc /tmp/dtbTool/source/dtbtool.c -o /tmp/dtbTool
+          gcc /tmp/dtbTool/source/dtbtool.c -o /tmp/dtbTool/dtbtool.c
           /tmp/dtbTool -h 2>&1 | head -5 || true       
           
       - name: 恢复 ccache
