@@ -103,12 +103,18 @@ jobs:
               > arch/arm64/boot/Image.gz-dtb
           ls -lh arch/arm64/boot/Image.gz-dtb
 
-      - name: 安装内核模块
+      - name: 编译内核模块并安装
         run: |
           cd src/linux
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
+
+          # 关键：先编译所有模块，这会生成 modules.order
+          make -j$(nproc) modules
+
+          # 然后再安装模块
           make INSTALL_MOD_PATH="${{ github.workspace }}/modules_out" modules_install
+
           KERNEL_VERSION=$(make -s kernelrelease)
           echo "KERNEL_VERSION=$KERNEL_VERSION" >> "$GITHUB_ENV"
           echo "模块已安装到 ${{ github.workspace }}/modules_out/lib/modules/$KERNEL_VERSION"
