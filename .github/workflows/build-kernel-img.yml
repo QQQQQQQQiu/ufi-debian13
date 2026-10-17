@@ -148,7 +148,61 @@ jobs:
           dtc -I dtb -O dts "$TGT" 2>/dev/null \
             | grep -E "qcom,(msm-id|board-id)" \
             || { echo "!! DTB 中没找到 msm-id/board-id，dtbTool 会再次失败"; exit 1; }
+            
+      - name: 生成最小 initramfs
+        run: |
+          set -e
+          # 创建临时根目录
+          INITRD_ROOT=/tmp/initrd-root
+          rm -rf "$INITRD_ROOT" && mkdir -p "$INITRD_ROOT"/{bin,dev,proc,sys,lib/modules,newroot}
 
+          # 1. 编译一个静态 busybox（如果系统没有）
+          if ! command -v busybox &>/dev/null; then
+            echo "构建静态 busybox..."
+            git clone --depth 1 https://github.com/mirror/busybox.git /tmp/busybox-src
+            cd /tmp/busybox-src
+            make defconfig
+            sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+            make -j"$(nproc)" busybox
+            cp busybox "$INITRD_ROOT/bin/"
+          else
+            cp "$(command -v busybox)" "$INITRD_ROOT/bin/"
+          fi
+
+          # 2. 复制必要的 eMMC 内核模块
+          #    你需要确认这些模块在你的内核构建产物里存在
+          KERNEL_MOD_DIR="src/linux/drivers/mmc"
+
+          # 3. 创建 init 脚本
+          cat > "$INITRD_ROOT/init" <<'EOF'
+          #!/bin/busybox sh
+          /bin/busybox mount -t proc none /proc
+          /bin/busybox mount -t sysfs none /sys
+          /bin/busybox mount -t devtmpfs none /dev
+
+          echo "Waiting for eMMC..."
+          for i in $(seq 1 10); do
+              [ -b /dev/mmcblk0 ] && break
+              /bin/busybox sleep 1
+          done
+
+          ROOT_PART=$(/bin/busybox blkid -L linuxroot)
+          if [ -z "$ROOT_PART" ]; then
+              echo "ERROR: Cannot find partition with LABEL=linuxroot"
+              /bin/busybox sh
+              exit 1
+          fi
+
+          echo "Found rootfs at $ROOT_PART"
+          /bin/busybox mount -t ext4 -o rw "$ROOT_PART" /newroot
+          exec /bin/busybox switch_root /newroot /sbin/init
+          EOF
+          chmod +x "$INITRD_ROOT/init"
+
+          # 4. 打包成 cpio.gz（或 xz 以减小体积）
+          ( cd "$INITRD_ROOT" && find . | cpio -o -H newc | gzip -9 > /tmp/boot/ramdisk.cpio.gz )
+          ls -lh /tmp/boot/ramdisk.cpio.gz
+          
       - name: 组装 Android boot.img
         run: |
           set -e
@@ -186,11 +240,7 @@ jobs:
           fi
           ls -lh /tmp/boot/dtb.img
 
-          # ---------------- 最小空 ramdisk ----------------
-          mkdir -p /tmp/boot/ramdisk
-          ( cd /tmp/boot/ramdisk && find . | cpio -o -H newc 2>/dev/null | gzip -9 > /tmp/boot/ramdisk.cpio.gz )
-          ls -lh /tmp/boot/ramdisk.cpio.gz
-
+          
           # ---------------- 打包 boot.img ----------------
           CMDLINE="${{ inputs.boot_cmdline }}"
           echo "=== boot.img cmdline ==="
