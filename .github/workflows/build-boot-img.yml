@@ -86,13 +86,7 @@ jobs:
           make olddefconfig
           
           MAIN="${{ inputs.dtb_name }}"
-          TGT="arch/arm64/boot/dts/qcom/$MAIN.dtb"
-          echo "目标dtb: $(TGT)"
-          
-          if [ ! -f "$TGT" ]; then
-            echo "!! 目标 DTB 不存在"
-            exit 1
-          fi
+          ls -lh arch/arm64/boot/dts/qcom/${{ inputs.dtb_name }}.dtb
           
       - name: 编译内核与 DTB
         run: |
