@@ -18,7 +18,7 @@ on:
       boot_cmdline:
         description: 'boot.img cmdline (写入 boot header，上限 512 字节)'
         required: true
-        default: 'earlycon root=/dev/mmcblk0p14 console=ttyMSM0,115200 no_framebuffer=true rw androidboot.emmc=true androidboot.serialno=11c722 androidboot.baseband=msm mdss_mdp.panel=0:dsi:0:'
+        default: 'earlycon root=PARTUUID=a7ab80e8-e9d1-e8cd-f157-93f69b1d141e console=ttyMSM0,115200 no_framebuffer=true rw androidboot.emmc=true androidboot.serialno=11c722 androidboot.baseband=msm mdss_mdp.panel=0:dsi:0:'
 
 env:
   DEBIAN_FRONTEND: noninteractive
@@ -158,21 +158,43 @@ jobs:
           sudo mkinitramfs -c gzip -k "$KERNEL_VERSION" -o "${{ github.workspace }}/initrd.img"
           ls -lh "${{ github.workspace }}/initrd.img"
 
-      - name: 打包 boot.img (mkbootimg + gki 修复)
+      - name: 打包 boot.img
         run: |
-          mkbootimg \
-            --base 0x80000000 \
-            --kernel_offset 0x00080000 \
-            --ramdisk_offset 0x02000000 \
-            --tags_offset 0x01e00000 \
-            --pagesize 2048 \
-            --second_offset 0x00f00000 \
-            --ramdisk initrd.img \
-            --cmdline "${{ inputs.boot_cmdline }}" \
-            --kernel src/linux/arch/arm64/boot/Image.gz-dtb \
-            -o boot.img
+          # 尝试修复 mkbootimg 的 gki 模块问题
+          GKI_FOUND=false
+          for p in /usr/share/android-tools/mkbootimg /usr/lib/android-tools; do
+            if [ -d "$p/gki" ]; then
+              export PYTHONPATH="$p:$PYTHONPATH"
+              GKI_FOUND=true
+              break
+            fi
+          done
 
-          ls -lh boot.img
+          if $GKI_FOUND && mkbootimg \
+              --base 0x80000000 \
+              --kernel_offset 0x00080000 \
+              --ramdisk_offset 0x02000000 \
+              --tags_offset 0x01e00000 \
+              --pagesize 2048 \
+              --second_offset 0x00f00000 \
+              --ramdisk initrd.img \
+              --cmdline "${{ inputs.boot_cmdline }}" \
+              --kernel src/linux/arch/arm64/boot/Image.gz-dtb \
+              -o boot.img; then
+            echo "使用 mkbootimg 打包成功"
+          else
+            echo "mkbootimg 不可用，回退到 abootimg"
+            sudo apt-get install -y abootimg
+            abootimg --create boot.img \
+              -k src/linux/arch/arm64/boot/Image.gz-dtb \
+              -r initrd.img \
+              -c "cmdline=${{ inputs.boot_cmdline }}" \
+              -c "pagesize=0x800" \
+              -c "kerneladdr=0x80080000" \
+              -c "ramdiskaddr=0x82000000" \
+              -c "secondaddr=0x80f00000" \
+              -c "tagsaddr=0x81e00000"
+          fi
           
       - name: 上传 boot.img 工件
         uses: actions/upload-artifact@v4
