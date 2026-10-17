@@ -105,7 +105,11 @@ jobs:
           #  fi
           #done
           
-          cp ../../kernel-fragments/kcfg ./.config
+          echo "-----"
+          rm .config
+          ls -la ../../kernel-fragments/
+          cp ../../kernel-fragments/kcfg .config
+          cat .config | grep -E 'FIG_DEBUG_IN'
           echo "-----"
           mkdir -p ../../files
           pwd
