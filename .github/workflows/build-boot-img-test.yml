@@ -109,12 +109,6 @@ jobs:
 
       - name: 打包 boot.img
         run: |
-        
-          GKI_FOUND=false
-          if $GKI_FOUND && mkbootimg \
-            
-          else
-            echo "mkbootimg 不可用，回退到 abootimg"
             sudo apt-get install -y abootimg
             abootimg --create boot.img \
               -k src/linux/arch/arm64/boot/Image.gz-dtb \
@@ -125,7 +119,6 @@ jobs:
               -c "ramdiskaddr=0x82000000" \
               -c "secondaddr=0x80f00000" \
               -c "tagsaddr=0x81e00000"
-          fi
           
       - name: 上传 boot.img 工件
         uses: actions/upload-artifact@v4
