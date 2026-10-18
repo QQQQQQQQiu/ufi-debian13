@@ -14,7 +14,7 @@ on:
       kernel_ref:
         description: '内核分支/tag。留空=用仓库默认分支(wip/msm8916/7.3-rc2、wip/msm8916/7.0)'
         required: false
-        default: ''
+        default: 'wip/msm8916/7.3-rc2'
       boot_cmdline:
         description: 'boot.img cmdline (写入 boot header，上限 512 字节)'
         required: true
