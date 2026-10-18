@@ -152,7 +152,7 @@ jobs:
             echo "$m" | sudo tee -a /etc/initramfs-tools/modules
           done
 
-          echo 'MODULES=most' | sudo tee /etc/initramfs-tools/initramfs.conf
+          echo 'MODULES=dep' | sudo tee /etc/initramfs-tools/initramfs.conf
 
           # 关键修改：用 -c gzip 显式指定压缩格式，避免 COMPRESS 未设置错误
           sudo mkinitramfs -c gzip -k "$KERNEL_VERSION" -o "${{ github.workspace }}/initrd.img"
