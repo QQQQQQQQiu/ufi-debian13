@@ -72,23 +72,31 @@ jobs:
 
       - name: 应用 CPU 超频补丁
         run: |
+          cp kernel-fragments/a53-pll.c src/linux/drivers/clk/qcom/a53-pll.c
+          
           DTSI=src/linux/arch/arm64/boot/dts/qcom/msm8916.dtsi
-          python3 tools/opp-overclock.py --check --dtsi "$DTSI" \
-            || echo "!! --check 未通过，跳过超频（不影响出包）"
+          python3 tools/opp-overclock.py --check --dtsi "$DTSI" || echo "!! --check 未通过，跳过超频（不影响出包）"
+            
+          ARGS=(--apply --hz "1152000000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
+          ARGS=(--apply --hz "1363200000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
+          ARGS=(--apply --hz "1401600000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
+          ARGS=(--apply --hz "1612800000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
+          ARGS=(--apply --hz "1843200000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
 
-          if [ "${{ inputs.oc_hz }}" != "0" ]; then
-            ARGS=(--apply --hz "${{ inputs.oc_hz }}" --dtsi "$DTSI")
-            [ -n "${{ inputs.oc_microvolt }}" ] && ARGS+=(--microvolt "${{ inputs.oc_microvolt }}")
-            python3 tools/opp-overclock.py "${ARGS[@]}" \
-              || echo "!! 超频补丁未应用，按内核默认频率出包"
-          else
-            echo "oc_hz=0，跳过超频"
-          fi
-
+          ARGS=(--apply --hz "1996800000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
           echo "=== 补丁后 OPP 复核 ==="
           python3 tools/opp-overclock.py --check --dtsi "$DTSI" || true
-          echo "=== 生成的节点内容 ==="
-          grep -A3 "opp-${{ inputs.oc_hz }}" "$DTSI" || echo "(未插入，按默认频率)"
           
       - name: 内核config
         run: |
