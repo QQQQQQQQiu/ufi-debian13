@@ -91,8 +91,8 @@ jobs:
           ARGS=(--apply --hz "1996800000" --dtsi "$DTSI")
           python3 tools/opp-overclock.py "${ARGS[@]}"
           
-          ARGS=(--apply --hz "2106800000" --dtsi "$DTSI")
-          python3 tools/opp-overclock.py "${ARGS[@]}"
+          #ARGS=(--apply --hz "2106800000" --dtsi "$DTSI")
+          #python3 tools/opp-overclock.py "${ARGS[@]}"
           
           echo "=== 补丁后 OPP 复核 ==="
           python3 tools/opp-overclock.py --check --dtsi "$DTSI" || true
