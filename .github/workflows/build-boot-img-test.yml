@@ -81,6 +81,15 @@ jobs:
           cp ../../kernel-fragments/kcfg .config
           make olddefconfig
           
+      - name: DTB
+        run: |
+          cd src/linux
+          export PATH="/usr/lib/ccache:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make -j$(nproc) dtbs
+          ls -lh arch/arm64/boot/dts/qcom/${{ inputs.dtb_name }}.dtb
+          
       - name: 拼接 Image.gz-dtb
         run: |
           cd src/linux
