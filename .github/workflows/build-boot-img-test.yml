@@ -90,10 +90,19 @@ jobs:
           make -j$(nproc) dtbs
           ls -lh arch/arm64/boot/dts/qcom/${{ inputs.dtb_name }}.dtb
           
+      - name: 内核
+        run: |
+          cd src/linux
+          export PATH="/usr/lib/ccache:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make -j$(nproc) Image.gz
+          ls -lh arch/arm64/boot/Image.gz
+          
       - name: 拼接 Image.gz-dtb
         run: |
           cd src/linux
-          cat ../../kernel-fragments/vmlinuz \
+          cat arch/arm64/boot/Image.gz \
               arch/arm64/boot/dts/qcom/${{ inputs.dtb_name }}.dtb \
               > arch/arm64/boot/Image.gz-dtb
           ls -lh arch/arm64/boot/Image.gz-dtb
@@ -103,17 +112,7 @@ jobs:
         
           GKI_FOUND=false
           if $GKI_FOUND && mkbootimg \
-              --base 0x80000000 \
-              --kernel_offset 0x00080000 \
-              --ramdisk_offset 0x02000000 \
-              --tags_offset 0x01e00000 \
-              --pagesize 2048 \
-              --second_offset 0x00f00000 \
-              --ramdisk initrd.img \
-              --cmdline "${{ inputs.boot_cmdline }}" \
-              --kernel src/linux/arch/arm64/boot/Image.gz-dtb \
-              -o boot.img; then
-            echo "使用 mkbootimg 打包成功"
+            
           else
             echo "mkbootimg 不可用，回退到 abootimg"
             sudo apt-get install -y abootimg
