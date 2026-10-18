@@ -122,7 +122,7 @@ jobs:
           
       - name: 覆盖修改过的dts-基带
         run: |
-          cp kernel-fragments/msm8916-ufi.dtsi src/linux/arch/arm64/boot/dts/qcom/msm8916-ufi.dtsi
+          #cp kernel-fragments/msm8916-ufi.dtsi src/linux/arch/arm64/boot/dts/qcom/msm8916-ufi.dtsi
           
       - name: DTB
         run: |
