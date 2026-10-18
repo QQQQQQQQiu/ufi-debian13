@@ -66,6 +66,34 @@ jobs:
           echo "=== 内核树里的 UFI/同类 DTB ==="
           ls linux/arch/arm64/boot/dts/qcom/ | grep -E "msm8916.*(thwc|uz801|ufi|mf800|jz)" || true
 
+      - name: 应用 CPU 超频补丁
+        run: |
+          cp kernel-fragments/a53-pll.c src/linux/drivers/clk/qcom/a53-pll.c
+          
+          DTSI=src/linux/arch/arm64/boot/dts/qcom/msm8916.dtsi
+          python3 tools/opp-overclock.py --check --dtsi "$DTSI" || echo "!! --check 未通过，跳过超频（不影响出包）"
+            
+          ARGS=(--apply --hz "1152000000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
+          ARGS=(--apply --hz "1363200000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
+          ARGS=(--apply --hz "1401600000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
+          ARGS=(--apply --hz "1612800000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
+          ARGS=(--apply --hz "1843200000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+
+          ARGS=(--apply --hz "1996800000" --dtsi "$DTSI")
+          python3 tools/opp-overclock.py "${ARGS[@]}"
+          
+          echo "=== 补丁后 OPP 复核 ==="
+          python3 tools/opp-overclock.py --check --dtsi "$DTSI" || true
+          
       - name: 内核config
         run: |
           cd src/linux
@@ -77,7 +105,23 @@ jobs:
           echo "----- 应用内核配置片段 kcfg是完整的内核配置 -----"
           ls -la ../../kernel-fragments/
           cp ../../kernel-fragments/kcfg .config
+          
+          #合并自定义配置片段
+          chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
+          if [ -f ../../kernel-fragments/ufi-lowmem.config ]; then
+            ./scripts/kconfig/merge_config.sh -m .config \
+              ../../kernel-fragments/ufi-lowmem.config
+            echo "!! 合并片段成功"  
+          else
+            echo "!! 找不到低内存配置片段，跳过合并"
+          fi
+          
           make olddefconfig
+          
+      - name: 覆盖修改过的dts
+        run: |
+          cd src/linux
+          cp ../../kernel-fragments/msm8916-ufi.dtsi arch/arm64/boot/dts/qcom/msm8916-ufi.dtsi
           
       - name: DTB
         run: |
@@ -120,6 +164,9 @@ jobs:
       - name: 上传 boot.img 工件
         uses: actions/upload-artifact@v4
         with:
-          name: boot-msm8916-${{ inputs.dtb_name }}
-          path: boot.img
-     
+          name: msm8916-${{ inputs.dtb_name }}
+          path: |
+            boot.img
+            arch/arm64/boot/Image.gz
+          retention-days: 30
+          
