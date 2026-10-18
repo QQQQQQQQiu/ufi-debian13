@@ -167,6 +167,6 @@ jobs:
           name: msm8916-${{ inputs.dtb_name }}
           path: |
             boot.img
-            arch/arm64/boot/Image.gz
+            src/linux/arch/arm64/boot/Image.gz
           retention-days: 30
           
