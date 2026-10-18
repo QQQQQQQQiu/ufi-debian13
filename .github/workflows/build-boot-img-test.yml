@@ -28,7 +28,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: debian:trixie
     timeout-minutes: 350
 
     steps:
@@ -49,7 +48,7 @@ jobs:
             binutils-aarch64-linux-gnu \
             kmod cpio rsync xz-utils zstd device-tree-compiler \
             dwarves libelf-dev python3 git curl ca-certificates ccache
-          sudo apt-get install -y mkbootimg
+          sudo apt-get install -y abootimg
           
 
       - name: 拉取内核源码
@@ -108,7 +107,6 @@ jobs:
 
       - name: 打包 boot.img
         run: |
-            sudo apt-get install -y abootimg
             abootimg --create boot.img \
               -k src/linux/arch/arm64/boot/Image.gz-dtb \
               -r kernel-fragments/initrd.img \
