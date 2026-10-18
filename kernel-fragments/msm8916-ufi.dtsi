@@ -124,11 +124,17 @@
 };
 
 &wcnss {
-	status = "okay";
+    vddmx-supply = <&pm8916_l3>;
+    vddcx-supply = <&pm8916_l5>;
+    status = "okay";
 };
 
 &wcnss_iris {
     compatible = "qcom,wcn3620";
+    vddxo-supply  = <&pm8916_l7>;
+    vddrfa-supply = <&pm8916_s3>;
+    vddpa-supply  = <&pm8916_l9>;
+    vdddig-supply = <&pm8916_l5>;
 };
 
 &wcnss_mem {
