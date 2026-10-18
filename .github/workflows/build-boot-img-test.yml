@@ -114,6 +114,11 @@ jobs:
           
           make olddefconfig
           
+      - name: 覆盖修改过的dts
+        run: |
+          cd src/linux
+          cp ../../kernel-fragments/msm8916-ufi.dtsi arch/arm64/boot/dts/qcom/msm8916-ufi.dtsi
+          
       - name: DTB
         run: |
           cd src/linux
