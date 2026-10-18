@@ -118,6 +118,8 @@ jobs:
             echo "!! 找不到低内存配置片段，跳过合并"
           fi
           
+          cp .config ../../kconfig
+          
           make olddefconfig
           
       - name: 覆盖修改过的dts-基带
@@ -169,5 +171,6 @@ jobs:
           path: |
             boot.img
             src/linux/arch/arm64/boot/Image.gz
+            kconfig
           retention-days: 30
           
