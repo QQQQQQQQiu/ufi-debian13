@@ -27,9 +27,8 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
- #   runs-on: ubuntu-latest
- #   container: debian:trixie
+    runs-on: ubuntu-latest
+    container: debian:trixie
     timeout-minutes: 350
 
     steps:
