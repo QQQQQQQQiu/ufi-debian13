@@ -125,15 +125,10 @@
 
 &wcnss {
 	status = "okay";
-	firmware-name = "qcom/msm8916/wcnss.mdt"; 
 };
 
 &wcnss_iris {
     compatible = "qcom,wcn3620";
-    vddxo-supply = <&pm8916_l7>;
-    vddrfa-supply = <&pm8916_s3>;
-    vddpa-supply = <&pm8916_l9>;
-    vdddig-supply = <&pm8916_l5>;
 };
 
 &wcnss_mem {
