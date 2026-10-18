@@ -112,7 +112,7 @@ jobs:
           #合并自定义配置片段
           chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
           if [ -f ../../kernel-fragments/ufi-lowmem.config ]; then
-            # ./scripts/kconfig/merge_config.sh -m .config ../../kernel-fragments/ufi-lowmem.config
+            ./scripts/kconfig/merge_config.sh -m .config ../../kernel-fragments/ufi-lowmem.config
             echo "!! 合并片段成功"  
           else
             echo "!! 找不到低内存配置片段，跳过合并"
@@ -122,7 +122,7 @@ jobs:
           
       - name: 覆盖修改过的dts-基带
         run: |
-          #cp kernel-fragments/msm8916-ufi.dtsi src/linux/arch/arm64/boot/dts/qcom/msm8916-ufi.dtsi
+          cp kernel-fragments/msm8916-ufi.dtsi src/linux/arch/arm64/boot/dts/qcom/msm8916-ufi.dtsi
           
       - name: DTB
         run: |
