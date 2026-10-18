@@ -1,4 +1,4 @@
-name: build-bootimg-test
+name: build-bootimg
 on:
   workflow_dispatch:
     inputs:
