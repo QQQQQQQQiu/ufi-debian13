@@ -18,7 +18,7 @@ on:
       boot_cmdline:
         description: 'boot.img cmdline (写入 boot header，上限 512 字节)'
         required: true
-        default: 'earlycon rootwait root=PARTUUID=a7ab80e8-e9d1-e8cd-f157-93f69b1d141e console=ttyMSM0,115200 no_framebuffer=true rw androidboot.emmc=true androidboot.serialno=11c722 androidboot.baseband=msm mdss_mdp.panel=0:dsi:0:'
+        default: 'earlycon rootwait root=PARTUUID=a7ab80e8-e9d1-e8cd-f157-93f69b1d141e rw console=ttyMSM0,115200 console=tty0 transparent_hugepage=never'
 
 env:
   DEBIAN_FRONTEND: noninteractive
