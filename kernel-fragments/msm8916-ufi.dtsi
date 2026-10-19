@@ -152,3 +152,9 @@
 		bias-disable;
 	};
 };
+
+/ {
+	bluetooth {
+		compatible = "qcom,wcnss-bt";
+	};
+};
