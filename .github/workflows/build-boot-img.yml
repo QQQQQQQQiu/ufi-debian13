@@ -14,7 +14,7 @@ on:
       kernel_ref:
         description: '内核分支/tag。留空=用仓库默认分支(wip/msm8916/7.3、wip/msm8916/7.0)'
         required: false
-        default: 'wip/msm8916/7.3-rc2'
+        default: 'wip/msm8916/7.3'
       boot_cmdline:
         description: 'boot.img cmdline (写入 boot header，上限 512 字节)'
         required: true
@@ -173,6 +173,15 @@ jobs:
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           ccache -M 5G
+          # --- 关键：绕过 dpkg-checkbuilddeps 对 arm64 libssl-dev 的检查 ---
+          mkdir -p /tmp/dpkgshim
+          cat > /tmp/dpkgshim/dpkg-buildpackage <<'EOF'
+          #!/bin/bash
+          exec /usr/bin/dpkg-buildpackage -d "$@"
+          EOF
+          chmod +x /tmp/dpkgshim/dpkg-buildpackage
+          export PATH="/tmp/dpkgshim:$PATH"
+          which dpkg-buildpackage
           echo "=== 开始构建内核 .deb 升级包 ==="
           make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- bindeb-pkg
           cd ../../
