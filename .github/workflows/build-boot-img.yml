@@ -12,13 +12,18 @@ on:
           - msm8916-yiming-uz801v3
           - msm8916-fy-mf800
       kernel_ref:
-        description: '内核分支/tag。留空=用仓库默认分支(wip/msm8916/7.3-rc2、wip/msm8916/7.0)'
+        description: '内核分支/tag。留空=用仓库默认分支(wip/msm8916/7.3、wip/msm8916/7.0)'
         required: false
         default: 'wip/msm8916/7.3-rc2'
       boot_cmdline:
         description: 'boot.img cmdline (写入 boot header，上限 512 字节)'
         required: true
         default: 'earlycon rootwait root=PARTUUID=a7ab80e8-e9d1-e8cd-f157-93f69b1d141e rw console=ttyMSM0,115200 console=tty0 transparent_hugepage=never'
+      build_deb:
+        description: '是否构建deb包（dpkg -i ./linux*）'
+        required: false
+        default: false
+        type: boolean  
 
 env:
   DEBIAN_FRONTEND: noninteractive
@@ -47,9 +52,8 @@ jobs:
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             kmod cpio rsync xz-utils zstd device-tree-compiler \
-            dwarves libelf-dev python3 git curl ca-certificates ccache
+            dwarves libelf-dev python3 git curl ca-certificates ccache dpkg-dev debhelper devscripts fakeroot
           sudo apt-get install -y abootimg
-          
 
       - name: 拉取内核源码
         run: |
@@ -90,9 +94,6 @@ jobs:
 
           ARGS=(--apply --hz "1996800000" --dtsi "$DTSI")
           python3 tools/opp-overclock.py "${ARGS[@]}"
-          
-          #ARGS=(--apply --hz "2106800000" --dtsi "$DTSI")
-          #python3 tools/opp-overclock.py "${ARGS[@]}"
           
           echo "=== 补丁后 OPP 复核 ==="
           python3 tools/opp-overclock.py --check --dtsi "$DTSI" || true
@@ -163,6 +164,20 @@ jobs:
               -c "ramdiskaddr=0x82000000" \
               -c "secondaddr=0x80f00000" \
               -c "tagsaddr=0x81e00000"
+              
+      - name: 构建deb
+        if: ${{ inputs.build_deb }}
+        run: |
+          cd src/linux
+          export PATH="/usr/lib/ccache:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          ccache -M 5G
+          echo "=== 开始构建内核 .deb 升级包 ==="
+          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- bindeb-pkg
+          cd ../../
+          cp src/*.deb ./
+          
           
       - name: 上传 boot.img 工件
         uses: actions/upload-artifact@v4
@@ -172,5 +187,6 @@ jobs:
             boot.img
             src/linux/arch/arm64/boot/Image.gz
             kconfig
+            ./*deb
           retention-days: 30
           
