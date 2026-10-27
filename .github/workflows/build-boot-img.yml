@@ -198,7 +198,8 @@ jobs:
       - name: 上传 boot.img 工件
         uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: dist
+          path: |
             boot.img
             src/linux/arch/arm64/boot/Image.gz
             kconfig
