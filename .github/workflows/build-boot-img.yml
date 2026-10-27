@@ -23,7 +23,12 @@ on:
         description: '是否构建deb包（dpkg -i ./linux*）'
         required: false
         default: false
-        type: boolean  
+        type: boolean
+      publish_release:
+        description: '是否发布release'
+        required: false
+        default: false
+        type: boolean    
 
 env:
   DEBIAN_FRONTEND: noninteractive
@@ -200,3 +205,12 @@ jobs:
             ./*deb
           retention-days: 30
           
+      - name: 发布到 Release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            boot.img
+            src/linux/arch/arm64/boot/Image.gz
+            kconfig
+            ./*deb
