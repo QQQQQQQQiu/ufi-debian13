@@ -209,6 +209,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
+          body: |
+            dtb：${{ inputs.dtb_name }}
+            cmdline：${{ inputs.boot_cmdline }}
           files: |
             boot.img
             src/linux/arch/arm64/boot/Image.gz
