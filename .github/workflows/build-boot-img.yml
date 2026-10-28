@@ -207,11 +207,11 @@ jobs:
           retention-days: 30
           
       - name: 发布到 Release
-        if: ${{ inputs.dtb_name }}
+        if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: ${{ inputs.publish_release }}
+          name: ${{ inputs.dtb_name }}
           body: |
             dtb：${{ inputs.dtb_name }}
             cmdline：${{ inputs.boot_cmdline }}
